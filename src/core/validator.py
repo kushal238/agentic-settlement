@@ -42,10 +42,12 @@ class Validator:
         if not claim.verify_signature():
             return Rejection(claim, self.validator_id, "invalid signature")
 
-        # 2. Check sender account exists
+        # 2. Check sender account exists and pubkey matches
         sender_account = self.state.get_account(claim.sender)
         if sender_account is None:
             return Rejection(claim, self.validator_id, f"unknown sender: {claim.sender}")
+        if claim.sender_pubkey != sender_account.owner:
+            return Rejection(claim, self.validator_id, "sender pubkey mismatch")
 
         # 3. Check recipient account exists
         recipient_account = self.state.get_account(claim.recipient)
@@ -63,7 +65,11 @@ class Validator:
         if claim.sender in self._pending:
             return Rejection(claim, self.validator_id, "pending claim already exists for sender")
 
-        # 6. Check sufficient balance
+        # 6. Check amount is positive
+        if claim.amount <= 0:
+            return Rejection(claim, self.validator_id, "invalid amount: must be positive")
+
+        # 7. Check sufficient balance
         if sender_account.balance < claim.amount:
             return Rejection(
                 claim, self.validator_id,

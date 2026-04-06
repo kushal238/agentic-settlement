@@ -98,6 +98,37 @@ def test_unknown_recipient_rejected(setup):
     assert "unknown recipient" in result.reason
 
 
+def test_pubkey_mismatch_rejected(setup):
+    alice_priv, alice_pub, bob_priv, bob_pub, validator = setup
+
+    # Sign with Bob's key AND use Bob's pubkey, but claim sender is "alice"
+    claim = create_claim("alice", "bob", 30, nonce=0, sender_pubkey=bob_pub, sender_privkey=bob_priv)
+    result = validator.verify_and_certify(claim)
+
+    assert isinstance(result, Rejection)
+    assert "pubkey mismatch" in result.reason
+
+
+def test_negative_amount_rejected(setup):
+    alice_priv, alice_pub, _, _, validator = setup
+
+    claim = create_claim("alice", "bob", -10, nonce=0, sender_pubkey=alice_pub, sender_privkey=alice_priv)
+    result = validator.verify_and_certify(claim)
+
+    assert isinstance(result, Rejection)
+    assert "must be positive" in result.reason
+
+
+def test_zero_amount_rejected(setup):
+    alice_priv, alice_pub, _, _, validator = setup
+
+    claim = create_claim("alice", "bob", 0, nonce=0, sender_pubkey=alice_pub, sender_privkey=alice_priv)
+    result = validator.verify_and_certify(claim)
+
+    assert isinstance(result, Rejection)
+    assert "must be positive" in result.reason
+
+
 def test_settle_updates_balances(setup):
     alice_priv, alice_pub, _, _, validator = setup
 
