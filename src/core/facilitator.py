@@ -1,4 +1,4 @@
-"""Facilitator: broadcast a claim to 3f validators, collect outcomes, check quorum (2f+1)."""
+"""Facilitator: broadcast a claim to 3f+1 validators, collect outcomes, check quorum (2f+1)."""
 
 from __future__ import annotations
 
@@ -45,7 +45,11 @@ class FacilitatorResult:
 
 @dataclass
 class FacilitatorConfig:
-    """n = 3f validators; quorum is 2f+1 valid certificates."""
+    """n = 3f+1 validators; quorum is 2f+1 valid certificates.
+
+    With 3f+1 validators the system tolerates up to f Byzantine faults,
+    which is the BFT threshold used in FastSet/FastPay.
+    """
 
     f: int
     validators: list[tuple[str, ValidatorClient]]
@@ -54,9 +58,9 @@ class FacilitatorConfig:
     def __post_init__(self) -> None:
         if self.f < 1:
             raise ValueError("f must be at least 1")
-        n = 3 * self.f
+        n = 3 * self.f + 1
         if len(self.validators) != n:
-            raise ValueError(f"expected {n} validators (3f), got {len(self.validators)}")
+            raise ValueError(f"expected {n} validators (3f+1), got {len(self.validators)}")
 
 
 def evaluate_round(
@@ -67,13 +71,13 @@ def evaluate_round(
     """
     Apply duplicate/missing rules and quorum counting over collected responses.
     Empty list for a validator id means dead (no response).
-    Expected keys: exactly 3f validator ids.
+    Expected keys: exactly 3f+1 validator ids.
     """
     if f < 1:
         raise ValueError("f must be at least 1")
-    n = 3 * f
+    n = 3 * f + 1
     if len(responses_per_id) != n:
-        raise ValueError(f"expected {n} validator entries (3f), got {len(responses_per_id)}")
+        raise ValueError(f"expected {n} validator entries (3f+1), got {len(responses_per_id)}")
 
     quorum_threshold = 2 * f + 1
     certificates: dict[str, Certificate] = {}
