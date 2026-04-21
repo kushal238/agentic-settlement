@@ -16,7 +16,7 @@ This project uses the standard FastSet/FastPay parameterization: **`n = 3f+1`** 
 | 4 | Validator signature | [`Certificate`](../src/core/validator.py) | Each accepting validator signs the claim payload and records pending state for the sender. |
 | 5 | Certificate / quorum assembly | [`Facilitator.submit_claim`](../src/core/facilitator.py), [`evaluate_round`](../src/core/facilitator.py) | Collects outcomes from **`3f+1`** endpoints, verifies validator signatures, handles duplicates/faults, requires **`2f+1`** valid certificates for quorum. Fast docs describe a **proxy** assembling one quorum proof; here the facilitator keeps a **set of per-validator certificates** (no aggregate signature) as a deliberate simplification. Future: optional aggregated certificate object. |
 | 6 | Pre-settlement | Not implemented | Future: broadcast quorum proof to every validator; move the transaction into a **presettled** queue respecting nonce ordering across the pipeline. |
-| 7 | Settlement | [`Validator.settle`](../src/core/validator.py) | Applies balances and nonce, clears pending. Future: app or facilitator drives settlement **after** quorum (and presettlement), with coordinated two-phase behavior if multiple validators must commit together. |
+| 7 | Settlement | [`Validator.settle`](../src/core/validator.py), [`Facilitator.submit_and_settle`](../src/core/facilitator.py) | Applies balances and nonce, clears pending. The facilitator drives settlement on every signing validator once quorum is reached; validators that rejected or timed out are intentionally left divergent until a future sync path reconciles them. |
 
 ## End-to-end flow (conceptual)
 
@@ -26,12 +26,12 @@ sequenceDiagram
   participant Fac as Facilitator
   participant V as Validators_n_eq_3f_plus_1
 
-  App->>Fac: submit_claim(signed_Claim)
+  App->>Fac: submit_and_settle(signed_Claim)
   Fac->>V: verify_and_certify per_validator
   V-->>Fac: Certificate_or_Rejection_or_timeout
   Fac->>Fac: evaluate_round quorum_2f_plus_1
+  Fac->>V: settle on signing_validators_only
   Fac-->>App: FacilitatorResult
-  Note over App,V: Settlement_step7_not_wired_yet
 ```
 
 ## References

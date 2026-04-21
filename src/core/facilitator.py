@@ -24,6 +24,9 @@ class ValidatorClient(Protocol):
     def verify_and_certify(self, claim: Claim) -> Certificate | Rejection:
         ...
 
+    def settle(self, claim: Claim) -> None:
+        ...
+
 
 @dataclass
 class FaultEvent:
@@ -196,7 +199,7 @@ class Facilitator:
         self._timeout = config.per_validator_timeout_seconds
 
     def submit_claim(self, claim: Claim) -> FacilitatorResult:
-        """Fan out to all 3f validators; wait until each responds or times out; then evaluate quorum."""
+        """Fan out to all 3f+1 validators; wait until each responds or times out; then evaluate quorum."""
 
         def call_one(vid: str, client: ValidatorClient) -> tuple[str, list[Certificate | Rejection]]:
             try:
@@ -224,3 +227,19 @@ class Facilitator:
             responses.setdefault(vid, [])
 
         return evaluate_round(claim, self._f, responses)
+
+    def submit_and_settle(self, claim: Claim) -> FacilitatorResult:
+        """Submit a claim; if quorum is reached, drive settlement on every signing validator.
+
+        Validators that rejected or timed out are intentionally not settled -- their state
+        diverges from the quorum view until they catch up through a separate sync path.
+        """
+        result = self.submit_claim(claim)
+        if not result.quorum_met:
+            return result
+
+        signer_ids = set(result.certificates.keys())
+        for vid, client in self._validators:
+            if vid in signer_ids:
+                client.settle(claim)
+        return result
