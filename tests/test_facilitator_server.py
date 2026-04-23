@@ -8,6 +8,7 @@ from nacl.signing import SigningKey
 
 from src.core.claim import create_claim
 from src.core.facilitator import Facilitator
+from src.core.quorum_proof import verify_payment_proof
 from src.facilitator_server.main import create_app
 from src.facilitator_server.node_registry import build_facilitator_config
 
@@ -82,6 +83,9 @@ def test_settle_happy_path(client, sender_keys, recipient_keys):
     data = resp.json()
     assert data["quorum_met"] is True
     assert data["success_count"] >= 3  # 2f+1 with f=1
+    assert data["payment_proof"] is not None
+    valid, detail = verify_payment_proof(data["payment_proof"], f=1)
+    assert valid, detail
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +131,7 @@ def test_settle_quorum_not_met_wrong_nonce(client, sender_keys):
     data = resp.json()
     assert data["quorum_met"] is False
     assert data["success_count"] == 0
+    assert data["payment_proof"] is None
 
 
 # ---------------------------------------------------------------------------

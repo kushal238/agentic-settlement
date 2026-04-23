@@ -19,8 +19,8 @@ def build_402_response(payload_hint: dict | None = None, detail: str | None = No
         recipient=config.PAYMENT_RECIPIENT,
         amount=config.PAYMENT_AMOUNT,
         instructions=(
-            "Attach X-Payment-Claim (base64url JSON of claim fields) and "
-            "X-Payment-Signature (base64url Ed25519 signature) headers."
+            "Settle via facilitator POST /settle, then retry with "
+            "X-Payment-Proof (base64url JSON quorum proof)."
         ),
     )
     headers: dict[str, str] = {

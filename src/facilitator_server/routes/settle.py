@@ -8,10 +8,13 @@ from nacl.signing import VerifyKey
 
 from src.core.claim import Claim
 from src.core.facilitator import Facilitator, FacilitatorResult
+from src.core.quorum_proof import build_payment_proof
+from src.facilitator_server import config
 from src.facilitator_server.models import (
     ClaimRequest,
     CertificateOut,
     FaultEventOut,
+    PaymentProofOut,
     QuorumResult,
 )
 
@@ -55,6 +58,10 @@ def result_to_response(result: FacilitatorResult) -> QuorumResult:
         FaultEventOut(kind=f.kind, validator_id=f.validator_id, detail=f.detail)
         for f in result.faults
     ]
+    payment_proof = None
+    if result.quorum_met:
+        payment_proof = PaymentProofOut(**build_payment_proof(result, config.BFT_F))
+
     return QuorumResult(
         quorum_met=result.quorum_met,
         success_count=result.success_count,
@@ -62,6 +69,7 @@ def result_to_response(result: FacilitatorResult) -> QuorumResult:
         rejections=rejections,
         dead=list(result.dead),
         faults=faults,
+        payment_proof=payment_proof,
     )
 
 

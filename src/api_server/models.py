@@ -25,6 +25,14 @@ class CertificateOut(BaseModel):
     validator_pubkey: str
 
 
+class PaymentProof(BaseModel):
+    claim: ClaimRequest
+    claim_digest: str
+    success_count: int
+    quorum_threshold: int
+    certificates: dict[str, CertificateOut]
+
+
 class FaultEventOut(BaseModel):
     kind: str
     validator_id: str
@@ -39,3 +47,4 @@ class QuorumResult(BaseModel):
     rejections: dict[str, str]
     dead: list[str]
     faults: list[FaultEventOut]
+    payment_proof: PaymentProof | None = None
