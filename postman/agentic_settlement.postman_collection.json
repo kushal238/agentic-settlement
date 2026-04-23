@@ -1,0 +1,504 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "name": "agentic-settlement",
+    "description": "x402 payment-gated API — test collection.\n\nSetup:\n  1. python scripts/dev_setup.py > postman/dev.postman_environment.json\n  2. Import both this collection and that environment file into Postman.\n  3. Start servers (see dev_setup.py stderr output for the exact commands).\n\nFastAPI interactive docs:\n  API Server:         http://localhost:8000/docs\n  Facilitator Server: http://localhost:8001/docs\n\nNOTE: After a successful happy-path test, increment CURRENT_NONCE by 1 in the\nenvironment before running the happy-path again.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "API_URL",          "value": "http://localhost:8000", "type": "string" },
+    { "key": "FACILITATOR_URL",  "value": "http://localhost:8001", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "0 — Health Checks",
+      "item": [
+        {
+          "name": "Facilitator GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{FACILITATOR_URL}}/health", "host": ["{{FACILITATOR_URL}}"], "path": ["health"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok',  () => pm.expect(pm.response.json().status).to.equal('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "API GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{API_URL}}/health", "host": ["{{API_URL}}"], "path": ["health"] }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok',  () => pm.expect(pm.response.json().status).to.equal('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1 — Facilitator Server: POST /settle",
+      "item": [
+        {
+          "name": "POST /settle — invalid signature → 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build a claim body with an all-zero (garbage) 64-byte signature.",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = parseInt(pm.environment.get('CURRENT_NONCE')  || '0');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64') || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';",
+                  "const sig = new Uint8Array(64); // all zeros — invalid Ed25519 signature",
+                  "const body = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64, signature: b64url(sig) };",
+                  "pm.variables.set('X_SETTLE_BODY', JSON.stringify(body, null, 2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('signature error', () => pm.expect(pm.response.json().detail.toLowerCase()).to.include('signature'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{{X_SETTLE_BODY}}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{FACILITATOR_URL}}/settle", "host": ["{{FACILITATOR_URL}}"], "path": ["settle"] }
+          }
+        },
+        {
+          "name": "POST /settle — wrong nonce → 200 quorum_met=false",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sign a claim with nonce=999 — validators will reject 'nonce mismatch'.",
+                  "const nacl = require('tweetnacl');",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const b64dec = s => {",
+                  "  var t = '';",
+                  "  for (var i = 0; i < s.length; i++) {",
+                  "    if (s[i]==='-') t+='+'; else if (s[i]==='_') t+='/'; else t+=s[i];",
+                  "  }",
+                  "  t += '='.repeat((4 - t.length % 4) % 4);",
+                  "  return Uint8Array.from(atob(t), c => c.charCodeAt(0));",
+                  "};",
+                  "const buildPayload = (s, r, a, n) =>",
+                  "  enc([s, r, String(a), String(n)].map(p => p.length + ':' + p).join('|'));",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = 999; // deliberately wrong",
+                  "const seedB64   = pm.environment.get('SENDER_SEED_B64');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64');",
+                  "const kp  = nacl.sign.keyPair.fromSeed(b64dec(seedB64));",
+                  "const sig = nacl.sign.detached(buildPayload(sender, recipient, amount, nonce), kp.secretKey);",
+                  "const body = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64, signature: b64url(sig) };",
+                  "pm.variables.set('X_SETTLE_BODY', JSON.stringify(body, null, 2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200 (HTTP ok, settlement failed)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('quorum_met is false', () => pm.expect(body.quorum_met).to.be.false);",
+                  "pm.test('success_count is 0',  () => pm.expect(body.success_count).to.equal(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{{X_SETTLE_BODY}}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{FACILITATOR_URL}}/settle", "host": ["{{FACILITATOR_URL}}"], "path": ["settle"] }
+          }
+        },
+        {
+          "name": "POST /settle — happy path → 200 quorum_met=true",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sign a valid claim using SENDER_SEED_B64 and CURRENT_NONCE from the environment.",
+                  "// After this succeeds, increment CURRENT_NONCE in the environment by 1.",
+                  "const nacl = require('tweetnacl');",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const b64dec = s => {",
+                  "  var t = '';",
+                  "  for (var i = 0; i < s.length; i++) {",
+                  "    if (s[i]==='-') t+='+'; else if (s[i]==='_') t+='/'; else t+=s[i];",
+                  "  }",
+                  "  t += '='.repeat((4 - t.length % 4) % 4);",
+                  "  return Uint8Array.from(atob(t), c => c.charCodeAt(0));",
+                  "};",
+                  "const buildPayload = (s, r, a, n) =>",
+                  "  enc([s, r, String(a), String(n)].map(p => p.length + ':' + p).join('|'));",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = parseInt(pm.environment.get('CURRENT_NONCE')  || '0');",
+                  "const seedB64   = pm.environment.get('SENDER_SEED_B64');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64');",
+                  "const kp  = nacl.sign.keyPair.fromSeed(b64dec(seedB64));",
+                  "const sig = nacl.sign.detached(buildPayload(sender, recipient, amount, nonce), kp.secretKey);",
+                  "const body = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64, signature: b64url(sig) };",
+                  "pm.variables.set('X_SETTLE_BODY', JSON.stringify(body, null, 2));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('quorum_met is true',    () => pm.expect(body.quorum_met).to.be.true);",
+                  "pm.test('success_count >= 3',    () => pm.expect(body.success_count).to.be.at.least(3));",
+                  "pm.test('no faults',             () => pm.expect(body.faults).to.have.lengthOf(0));",
+                  "// Auto-increment nonce for next run",
+                  "const nonce = parseInt(pm.environment.get('CURRENT_NONCE') || '0');",
+                  "pm.environment.set('CURRENT_NONCE', String(nonce + 1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{{X_SETTLE_BODY}}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{FACILITATOR_URL}}/settle", "host": ["{{FACILITATOR_URL}}"], "path": ["settle"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 — API Server: GET /resource",
+      "item": [
+        {
+          "name": "GET /resource — no headers → 402",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 402', () => pm.response.to.have.status(402));",
+                  "const body = pm.response.json();",
+                  "pm.test('payment_required true',   () => pm.expect(body.payment_required).to.be.true);",
+                  "pm.test('scheme is fastset',       () => pm.expect(body.scheme).to.equal('fastset-ed25519'));",
+                  "pm.test('X-Payment-Version header', () => pm.expect(pm.response.headers.get('X-Payment-Version')).to.equal('1'));",
+                  "pm.test('X-Payment-Payload-Hash',  () => pm.expect(pm.response.headers.get('X-Payment-Payload-Hash')).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{API_URL}}/resource", "host": ["{{API_URL}}"], "path": ["resource"] }
+          }
+        },
+        {
+          "name": "GET /resource — bad signature → 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Valid claim header, but all-zero signature bytes.",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = parseInt(pm.environment.get('CURRENT_NONCE')  || '0');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64') || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';",
+                  "const claimFields = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64 };",
+                  "pm.variables.set('X_PAYMENT_CLAIM', b64url(enc(JSON.stringify(claimFields))));",
+                  "pm.variables.set('X_PAYMENT_SIG',   b64url(new Uint8Array(64)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('signature error', () => pm.expect(pm.response.json().error.toLowerCase()).to.include('signature'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Payment-Claim",     "value": "{{X_PAYMENT_CLAIM}}" },
+              { "key": "X-Payment-Signature", "value": "{{X_PAYMENT_SIG}}" }
+            ],
+            "url": { "raw": "{{API_URL}}/resource", "host": ["{{API_URL}}"], "path": ["resource"] }
+          }
+        },
+        {
+          "name": "GET /resource — wrong recipient → 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Claim targets 'wrong-recipient' — server rejects before even checking signature.",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = 'wrong-recipient'; // intentionally wrong",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = parseInt(pm.environment.get('CURRENT_NONCE')  || '0');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64') || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';",
+                  "const claimFields = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64 };",
+                  "pm.variables.set('X_PAYMENT_CLAIM', b64url(enc(JSON.stringify(claimFields))));",
+                  "pm.variables.set('X_PAYMENT_SIG',   b64url(new Uint8Array(64)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('recipient error', () => pm.expect(pm.response.json().error.toLowerCase()).to.include('recipient'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Payment-Claim",     "value": "{{X_PAYMENT_CLAIM}}" },
+              { "key": "X-Payment-Signature", "value": "{{X_PAYMENT_SIG}}" }
+            ],
+            "url": { "raw": "{{API_URL}}/resource", "host": ["{{API_URL}}"], "path": ["resource"] }
+          }
+        },
+        {
+          "name": "GET /resource — wrong nonce → 402 (quorum not met)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Valid signature but nonce=999 — validators will reject, quorum not met.",
+                  "const nacl = require('tweetnacl');",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const b64dec = s => {",
+                  "  var t = '';",
+                  "  for (var i = 0; i < s.length; i++) {",
+                  "    if (s[i]==='-') t+='+'; else if (s[i]==='_') t+='/'; else t+=s[i];",
+                  "  }",
+                  "  t += '='.repeat((4 - t.length % 4) % 4);",
+                  "  return Uint8Array.from(atob(t), c => c.charCodeAt(0));",
+                  "};",
+                  "const buildPayload = (s, r, a, n) =>",
+                  "  enc([s, r, String(a), String(n)].map(p => p.length + ':' + p).join('|'));",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = 999; // deliberately wrong",
+                  "const seedB64   = pm.environment.get('SENDER_SEED_B64');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64');",
+                  "const kp  = nacl.sign.keyPair.fromSeed(b64dec(seedB64));",
+                  "const sig = nacl.sign.detached(buildPayload(sender, recipient, amount, nonce), kp.secretKey);",
+                  "const claimFields = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64 };",
+                  "pm.variables.set('X_PAYMENT_CLAIM', b64url(enc(JSON.stringify(claimFields))));",
+                  "pm.variables.set('X_PAYMENT_SIG',   b64url(sig));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 402', () => pm.response.to.have.status(402));",
+                  "pm.test('Quorum not reached detail', () => pm.expect(pm.response.json().detail || '').to.include('Quorum not reached'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Payment-Claim",     "value": "{{X_PAYMENT_CLAIM}}" },
+              { "key": "X-Payment-Signature", "value": "{{X_PAYMENT_SIG}}" }
+            ],
+            "url": { "raw": "{{API_URL}}/resource", "host": ["{{API_URL}}"], "path": ["resource"] }
+          }
+        },
+        {
+          "name": "GET /resource — happy path → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Full x402 flow: sign claim, pass headers, get 200 + valuable payload.",
+                  "// After success, CURRENT_NONCE is auto-incremented by the test script.",
+                  "const nacl = require('tweetnacl');",
+                  "const enc = s => new Uint8Array(s.split('').map(c => c.charCodeAt(0)));",
+                  "const b64url = bytes => {",
+                  "  var s='', r=''; new Uint8Array(bytes).forEach(x => s += String.fromCharCode(x));",
+                  "  var t = btoa(s);",
+                  "  for (var i = 0; i < t.length; i++) {",
+                  "    if (t[i]==='+') r+='-'; else if (t[i]==='/') r+='_'; else if (t[i]!=='=') r+=t[i];",
+                  "  } return r;",
+                  "};",
+                  "const b64dec = s => {",
+                  "  var t = '';",
+                  "  for (var i = 0; i < s.length; i++) {",
+                  "    if (s[i]==='-') t+='+'; else if (s[i]==='_') t+='/'; else t+=s[i];",
+                  "  }",
+                  "  t += '='.repeat((4 - t.length % 4) % 4);",
+                  "  return Uint8Array.from(atob(t), c => c.charCodeAt(0));",
+                  "};",
+                  "const buildPayload = (s, r, a, n) =>",
+                  "  enc([s, r, String(a), String(n)].map(p => p.length + ':' + p).join('|'));",
+                  "const sender    = pm.environment.get('SENDER_ID')    || 'sender-1';",
+                  "const recipient = pm.environment.get('RECIPIENT_ID') || 'server-recipient';",
+                  "const amount    = parseInt(pm.environment.get('PAYMENT_AMOUNT') || '10');",
+                  "const nonce     = parseInt(pm.environment.get('CURRENT_NONCE')  || '0');",
+                  "const seedB64   = pm.environment.get('SENDER_SEED_B64');",
+                  "const pubkeyB64 = pm.environment.get('SENDER_PUBKEY_B64');",
+                  "const kp  = nacl.sign.keyPair.fromSeed(b64dec(seedB64));",
+                  "const sig = nacl.sign.detached(buildPayload(sender, recipient, amount, nonce), kp.secretKey);",
+                  "const claimFields = { sender, recipient, amount, nonce, sender_pubkey: pubkeyB64 };",
+                  "pm.variables.set('X_PAYMENT_CLAIM', b64url(enc(JSON.stringify(claimFields))));",
+                  "pm.variables.set('X_PAYMENT_SIG',   b64url(sig));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Payment-Settled true', () => pm.expect(pm.response.headers.get('X-Payment-Settled')).to.equal('true'));",
+                  "pm.test('quorum size header',     () => pm.expect(parseInt(pm.response.headers.get('X-Payment-Quorum-Size'))).to.be.at.least(3));",
+                  "pm.test('data in response',       () => pm.expect(pm.response.json()).to.have.property('data'));",
+                  "// Auto-increment nonce for next run",
+                  "const nonce = parseInt(pm.environment.get('CURRENT_NONCE') || '0');",
+                  "pm.environment.set('CURRENT_NONCE', String(nonce + 1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Payment-Claim",     "value": "{{X_PAYMENT_CLAIM}}" },
+              { "key": "X-Payment-Signature", "value": "{{X_PAYMENT_SIG}}" }
+            ],
+            "url": { "raw": "{{API_URL}}/resource", "host": ["{{API_URL}}"], "path": ["resource"] }
+          }
+        }
+      ]
+    }
+  ]
+}
