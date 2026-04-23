@@ -10,8 +10,10 @@ from src.core.crypto import generate_keypair, sign
 from src.core.facilitator import (
     Facilitator,
     FacilitatorConfig,
+    FacilitatorResult,
     evaluate_round,
 )
+from src.core.quorum_proof import build_payment_proof, verify_payment_proof
 from src.core.validator import Certificate, Validator, Rejection
 
 
@@ -246,3 +248,67 @@ def test_byzantine_equivocation_tolerated():
     assert r.success_count == 3
     assert "V1" not in r.certificates
     assert any(f.kind == "equivocation" for f in r.faults)
+
+
+def test_payment_proof_rejects_duplicate_signer_certificate():
+    alice_priv, alice_pub, validators = _four_validators()
+    claim = create_claim("alice", "bob", 30, nonce=0, sender_pubkey=alice_pub, sender_privkey=alice_priv)
+    cert = validators[0].verify_and_certify(claim)
+    assert isinstance(cert, Certificate)
+    result = FacilitatorResult(
+        claim=claim,
+        quorum_met=True,
+        success_count=3,
+        certificates={"V1": cert, "V2": cert, "V3": cert},
+        rejections={},
+        dead=set(),
+        faults=[],
+    )
+    proof = build_payment_proof(result, f=1)
+    valid, detail = verify_payment_proof(proof, f=1)
+    assert not valid
+    assert "validator id mismatch" in detail
+
+
+def test_payment_proof_rejects_claim_digest_mismatch():
+    alice_priv, alice_pub, validators = _four_validators()
+    claim = create_claim("alice", "bob", 30, nonce=0, sender_pubkey=alice_pub, sender_privkey=alice_priv)
+    certificates = {}
+    for v in validators[:3]:
+        cert = v.verify_and_certify(claim)
+        assert isinstance(cert, Certificate)
+        certificates[v.validator_id] = cert
+    result = FacilitatorResult(
+        claim=claim,
+        quorum_met=True,
+        success_count=3,
+        certificates=certificates,
+        rejections={},
+        dead=set(),
+        faults=[],
+    )
+    proof = build_payment_proof(result, f=1)
+    proof["claim_digest"] = "0" * 64
+    valid, detail = verify_payment_proof(proof, f=1)
+    assert not valid
+    assert "digest mismatch" in detail
+
+
+def test_payment_proof_rejects_insufficient_signatures():
+    alice_priv, alice_pub, validators = _four_validators()
+    claim = create_claim("alice", "bob", 30, nonce=0, sender_pubkey=alice_pub, sender_privkey=alice_priv)
+    cert = validators[0].verify_and_certify(claim)
+    assert isinstance(cert, Certificate)
+    result = FacilitatorResult(
+        claim=claim,
+        quorum_met=False,
+        success_count=1,
+        certificates={"V1": cert},
+        rejections={},
+        dead=set(),
+        faults=[],
+    )
+    proof = build_payment_proof(result, f=1)
+    valid, detail = verify_payment_proof(proof, f=1)
+    assert not valid
+    assert "insufficient signatures" in detail
