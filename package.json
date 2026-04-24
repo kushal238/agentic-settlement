@@ -1,0 +1,11 @@
+{
+  "name": "agentic-settlement",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "concurrently --kill-others --names \"facilitator,api,frontend\" --prefix-colors \"cyan.bold,yellow.bold,green.bold\" \"python -m src.facilitator_server.main\" \"python -m src.api_server.main\" \"npm --prefix frontend run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

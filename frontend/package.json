@@ -1,0 +1,40 @@
+{
+  "name": "agentic-settlement-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "gen-genesis": "tsx scripts/gen-genesis.ts"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.4.0",
+    "d3-axis": "^3.0.0",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "framer-motion": "^11.0.0",
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "zustand": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/d3-axis": "^3.0.6",
+    "@types/d3-scale": "^4.0.8",
+    "@types/d3-selection": "^3.0.10",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.3.0",
+    "vitest": "^1.6.0"
+  }
+}

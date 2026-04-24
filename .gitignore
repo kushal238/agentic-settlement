@@ -8,3 +8,7 @@ venv/
 .env
 docs/frontend-*.md
 docs/*-transcript.md
+.claude/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/

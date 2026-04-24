@@ -30,10 +30,13 @@ class Validator:
         self.validator_id = validator_id
         self.state = state
         self._signing_key, self.verify_key = generate_keypair()
-        # Pending claims: at most one per sender account
         self._pending: dict[str, Claim] = {}
+        self.faulty: bool = False  # set via debug endpoint to simulate Byzantine fault
 
     def verify_and_certify(self, claim: Claim) -> Certificate | Rejection:
+        if self.faulty:
+            return Rejection(claim, self.validator_id, "injected fault (Byzantine)")
+
         """
         Independently verify a claim. If valid, sign it and return a certificate.
         If invalid, return a rejection with the reason.
