@@ -41,7 +41,7 @@ def facilitator(sender_keys, recipient_keys):
         {"account_id": "sender-1", "pubkey_b64": _b64(bytes(sender_vk)), "balance": 1000},
         {"account_id": "recipient-1", "pubkey_b64": _b64(bytes(recipient_vk)), "balance": 0},
     ]
-    cfg = build_facilitator_config(f=1, per_validator_timeout_s=2.0, genesis_accounts=genesis)
+    cfg, _ = build_facilitator_config(f=1, per_validator_timeout_s=2.0, genesis_accounts=genesis)
     return Facilitator(cfg)
 
 
