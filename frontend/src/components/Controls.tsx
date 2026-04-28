@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Play, RotateCcw, AlertCircle, CheckCircle2, Loader2, XCircle } from 'lucide-react';
+import { Play, RotateCcw, AlertCircle, CheckCircle2, Loader2, XCircle, Layers, Grid2X2 } from 'lucide-react';
 import { useSimStore } from '../store/simStore';
+import type { ViewMode } from '../store/simStore';
 import { runSimulation } from '../sim/engine';
 import { resetNonce, getCurrentNonce } from '../protocol/wallet';
 import { reconfigureValidators } from '../protocol/api';
@@ -18,6 +19,8 @@ export function Controls() {
   const setF = useSimStore((s) => s.setF);
   const scenario = useSimStore((s) => s.scenario);
   const setScenario = useSimStore((s) => s.setScenario);
+  const viewMode = useSimStore((s) => s.viewMode);
+  const setViewMode = useSimStore((s) => s.setViewMode);
 
   const [reconfiguring, setReconfiguring] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -130,6 +133,25 @@ export function Controls() {
             — {selectedScenario.failedCheck} fails
           </span>
         )}
+      </div>
+
+      {/* View mode toggle */}
+      <div className="flex items-center gap-0.5 shrink-0">
+        {(['simple', 'detailed'] as ViewMode[]).map((m) => (
+          <button
+            key={m}
+            onClick={() => setViewMode(m)}
+            title={m === 'simple' ? 'Simple high-level view' : 'Detailed actor view'}
+            className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+              viewMode === m
+                ? 'bg-gray-600 text-white'
+                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+            }`}
+          >
+            {m === 'simple' ? <Layers size={12} /> : <Grid2X2 size={12} />}
+            {m === 'simple' ? 'Simple' : 'Detailed'}
+          </button>
+        ))}
       </div>
 
       {/* Status + actions pushed right */}

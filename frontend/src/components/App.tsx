@@ -3,6 +3,7 @@ import { Controls } from './Controls';
 import { ActorPanel } from './ActorPanel';
 import { ValidatorGrid } from './ValidatorGrid';
 import { FlowCanvas } from './FlowCanvas';
+import { SimpleTopology } from './SimpleTopology';
 import { Timeline } from './Timeline';
 import { MethodLog } from './MethodLog';
 import { Inspector } from './Inspector';
@@ -63,64 +64,77 @@ export function App() {
   const [selectedActor, setSelectedActor] = useState<string | null>(null);
   const [hoveredActor, setHoveredActor] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const viewMode = useSimStore((s) => s.viewMode);
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-gray-950 font-mono">
       {/* Top bar */}
       <Controls />
 
-      {/* Actor band + flow canvas */}
-      <div className="relative px-4 pt-3 pb-1" style={{ minHeight: 220 }}>
-        <div className="grid grid-cols-4 gap-2 relative z-10">
-          <div
-            onMouseEnter={() => setHoveredActor('client')}
-            onMouseLeave={() => setHoveredActor(null)}
-          >
-            <ActorPanel
-              actorId="client"
-              snapshot={currentSnapshot}
-              prevSnapshot={prevSnapshot}
-              selected={selectedActor === 'client'}
-              onClick={() => setSelectedActor('client')}
-            />
-          </div>
-          <div
-            onMouseEnter={() => setHoveredActor('resource-server')}
-            onMouseLeave={() => setHoveredActor(null)}
-          >
-            <ActorPanel
-              actorId="resource-server"
-              snapshot={currentSnapshot}
-              prevSnapshot={prevSnapshot}
-              selected={selectedActor === 'resource-server'}
-              onClick={() => setSelectedActor('resource-server')}
-            />
-          </div>
-          <div
-            onMouseEnter={() => setHoveredActor('facilitator')}
-            onMouseLeave={() => setHoveredActor(null)}
-          >
-            <ActorPanel
-              actorId="facilitator"
-              snapshot={currentSnapshot}
-              prevSnapshot={prevSnapshot}
-              selected={selectedActor === 'facilitator'}
-              onClick={() => setSelectedActor('facilitator')}
-            />
-          </div>
-          <ValidatorGrid
+      {/* Top visualization — simple or detailed */}
+      {viewMode === 'simple' ? (
+        <div className="px-4 pt-2 pb-1" style={{ minHeight: 220 }}>
+          <SimpleTopology
             snapshot={currentSnapshot}
-            prevSnapshot={prevSnapshot}
             selectedActor={selectedActor}
-            onSelect={setSelectedActor}
+            onSelectActor={setSelectedActor}
+            onHoverActor={setHoveredActor}
           />
         </div>
+      ) : (
+        /* Detailed: original actor band + flow canvas */
+        <div className="relative px-4 pt-3 pb-1" style={{ minHeight: 220 }}>
+          <div className="grid grid-cols-4 gap-2 relative z-10">
+            <div
+              onMouseEnter={() => setHoveredActor('client')}
+              onMouseLeave={() => setHoveredActor(null)}
+            >
+              <ActorPanel
+                actorId="client"
+                snapshot={currentSnapshot}
+                prevSnapshot={prevSnapshot}
+                selected={selectedActor === 'client'}
+                onClick={() => setSelectedActor('client')}
+              />
+            </div>
+            <div
+              onMouseEnter={() => setHoveredActor('resource-server')}
+              onMouseLeave={() => setHoveredActor(null)}
+            >
+              <ActorPanel
+                actorId="resource-server"
+                snapshot={currentSnapshot}
+                prevSnapshot={prevSnapshot}
+                selected={selectedActor === 'resource-server'}
+                onClick={() => setSelectedActor('resource-server')}
+              />
+            </div>
+            <div
+              onMouseEnter={() => setHoveredActor('facilitator')}
+              onMouseLeave={() => setHoveredActor(null)}
+            >
+              <ActorPanel
+                actorId="facilitator"
+                snapshot={currentSnapshot}
+                prevSnapshot={prevSnapshot}
+                selected={selectedActor === 'facilitator'}
+                onClick={() => setSelectedActor('facilitator')}
+              />
+            </div>
+            <ValidatorGrid
+              snapshot={currentSnapshot}
+              prevSnapshot={prevSnapshot}
+              selectedActor={selectedActor}
+              onSelect={setSelectedActor}
+            />
+          </div>
 
-        {/* SVG flow canvas overlay */}
-        <div className="absolute inset-0 pointer-events-none z-20 px-4 pt-3 pb-1">
-          <FlowCanvas />
+          {/* SVG flow canvas overlay */}
+          <div className="absolute inset-0 pointer-events-none z-20 px-4 pt-3 pb-1">
+            <FlowCanvas />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Timeline */}
       <div className="px-4 py-1">

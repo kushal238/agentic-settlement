@@ -5,6 +5,7 @@ import { eventIndexAtTime } from '../sim/timeline';
 
 export type SimStatus = 'idle' | 'running' | 'done' | 'error';
 export type Speed = 0.001 | 0.005 | 0.02 | 0.05;
+export type ViewMode = 'simple' | 'detailed';
 
 interface SimStore {
   events: SimEvent[];
@@ -33,6 +34,8 @@ interface SimStore {
   setError(e: string): void;
   setF(f: number): void;
   setScenario(s: ScenarioId): void;
+  viewMode: ViewMode;
+  setViewMode(m: ViewMode): void;
 }
 
 export const useSimStore = create<SimStore>((set, get) => ({
@@ -47,6 +50,7 @@ export const useSimStore = create<SimStore>((set, get) => ({
   error: null,
   f: 1,
   scenario: 'happy',
+  viewMode: 'simple',
 
   setEvents(events, snapshots) {
     const epoch = events.length > 0 ? events[0]!.t_start_us : 0;
@@ -117,5 +121,9 @@ export const useSimStore = create<SimStore>((set, get) => ({
 
   setScenario(s) {
     set({ scenario: s });
+  },
+
+  setViewMode(m) {
+    set({ viewMode: m });
   },
 }));
