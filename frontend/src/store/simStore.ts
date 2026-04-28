@@ -1,9 +1,10 @@
 import { create } from 'zustand';
 import type { SimEvent, WorldSnapshot } from '../sim/types';
+import type { ScenarioId } from '../sim/scenarios';
 import { eventIndexAtTime } from '../sim/timeline';
 
 export type SimStatus = 'idle' | 'running' | 'done' | 'error';
-export type Speed = 0.25 | 1 | 4 | 16;
+export type Speed = 0.001 | 0.005 | 0.02 | 0.05;
 
 interface SimStore {
   events: SimEvent[];
@@ -15,6 +16,9 @@ interface SimStore {
   speed: Speed;
   status: SimStatus;
   error: string | null;
+  /** Current fault-tolerance parameter — determines n = 3f+1 validators */
+  f: number;
+  scenario: ScenarioId;
 
   setEvents(events: SimEvent[], snapshots: WorldSnapshot[]): void;
   setCurrentTime(t: number): void;
@@ -27,6 +31,8 @@ interface SimStore {
   reset(): void;
   setStatus(s: SimStatus): void;
   setError(e: string): void;
+  setF(f: number): void;
+  setScenario(s: ScenarioId): void;
 }
 
 export const useSimStore = create<SimStore>((set, get) => ({
@@ -36,9 +42,11 @@ export const useSimStore = create<SimStore>((set, get) => ({
   currentTime: 0,
   playheadIndex: -1,
   playing: false,
-  speed: 1,
+  speed: 0.05,
   status: 'idle',
   error: null,
+  f: 1,
+  scenario: 'happy',
 
   setEvents(events, snapshots) {
     const epoch = events.length > 0 ? events[0]!.t_start_us : 0;
@@ -101,5 +109,13 @@ export const useSimStore = create<SimStore>((set, get) => ({
 
   setError(e) {
     set({ error: e, status: 'error', playing: false });
+  },
+
+  setF(f) {
+    set({ f });
+  },
+
+  setScenario(s) {
+    set({ scenario: s });
   },
 }));

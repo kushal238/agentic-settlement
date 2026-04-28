@@ -6,7 +6,7 @@ import { Play, Pause, SkipBack, SkipForward } from 'lucide-react';
 import { useSimStore } from '../store/simStore';
 import type { Speed } from '../store/simStore';
 
-const SPEEDS: Speed[] = [0.25, 1, 4, 16];
+const SPEEDS: Speed[] = [0.001, 0.005, 0.02, 0.05];
 
 export function Timeline() {
   const events = useSimStore((s) => s.events);

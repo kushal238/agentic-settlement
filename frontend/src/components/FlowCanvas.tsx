@@ -2,27 +2,35 @@ import { useEffect, useRef, useState } from 'react';
 import { useSimStore } from '../store/simStore';
 import type { SimEvent } from '../sim/types';
 
-// Fixed x-positions (fraction of canvas width) per actor zone
-const ACTOR_X: Record<string, number> = {
+// Fixed positions for non-validator actors
+const BASE_ACTOR_X: Record<string, number> = {
   'client': 0.125,
   'resource-server': 0.375,
   'facilitator': 0.625,
-  'validator-0': 0.8125,
-  'validator-1': 0.9375,
-  'validator-2': 0.8125,
-  'validator-3': 0.9375,
 };
-
-// Y offsets for validators (top row vs bottom row)
-const ACTOR_Y_FRAC: Record<string, number> = {
+const BASE_ACTOR_Y: Record<string, number> = {
   'client': 0.5,
   'resource-server': 0.5,
   'facilitator': 0.5,
-  'validator-0': 0.25,
-  'validator-1': 0.25,
-  'validator-2': 0.75,
-  'validator-3': 0.75,
 };
+
+// Group positions in the right 25% of canvas: 2×2 arrangement
+const GROUP_X = [0.8125, 0.9375, 0.8125, 0.9375];
+const GROUP_Y = [0.25, 0.25, 0.75, 0.75];
+
+/**
+ * For n <= 4 validators: each validator has its own canvas position.
+ * For n > 4: validators share their group's position (4 per group).
+ */
+function getValidatorPos(validatorIndex: number, n: number): [number, number] {
+  if (n <= 4) {
+    const x = [0.8125, 0.9375, 0.8125, 0.9375];
+    const y = [0.25, 0.25, 0.75, 0.75];
+    return [x[validatorIndex] ?? 0.875, y[validatorIndex] ?? 0.5];
+  }
+  const groupIdx = Math.floor(validatorIndex / 4);
+  return [GROUP_X[groupIdx] ?? 0.875, GROUP_Y[groupIdx] ?? 0.5];
+}
 
 const KIND_COLOR: Record<string, string> = {
   get_resource: '#F59E0B',
@@ -54,6 +62,8 @@ export function FlowCanvas() {
   const events = useSimStore((s) => s.events);
   const playheadIndex = useSimStore((s) => s.playheadIndex);
   const playing = useSimStore((s) => s.playing);
+  const f = useSimStore((s) => s.f);
+  const n = 3 * f + 1;
   const containerRef = useRef<SVGSVGElement>(null);
   const [dim, setDim] = useState({ w: 800, h: 120 });
   const packetsRef = useRef<Map<string, Packet>>(new Map());
@@ -112,10 +122,23 @@ export function FlowCanvas() {
   const { w, h } = dim;
 
   function actorXY(actorId: string): [number, number] {
-    const xFrac = ACTOR_X[actorId] ?? 0.5;
-    const yFrac = ACTOR_Y_FRAC[actorId] ?? 0.5;
-    return [xFrac * w, yFrac * h];
+    if (BASE_ACTOR_X[actorId] !== undefined) {
+      return [BASE_ACTOR_X[actorId]! * w, BASE_ACTOR_Y[actorId]! * h];
+    }
+    const match = actorId.match(/^validator-(\d+)$/);
+    if (match) {
+      const idx = parseInt(match[1]!);
+      const [xFrac, yFrac] = getValidatorPos(idx, n);
+      return [xFrac * w, yFrac * h];
+    }
+    return [0.5 * w, 0.5 * h];
   }
+
+  // Compute all actor IDs for anchor dots
+  const allActorIds = [
+    ...Object.keys(BASE_ACTOR_X),
+    ...Array.from({ length: n }, (_, i) => `validator-${i}`),
+  ];
 
   const arrows: JSX.Element[] = [];
 
@@ -147,11 +170,17 @@ export function FlowCanvas() {
     );
   });
 
-  // Actor anchor dots
-  const anchors = Object.keys(ACTOR_X).map((id) => {
-    const [x, y] = actorXY(id);
-    return <circle key={id} cx={x} cy={y} r={3} fill="#374151" stroke="#6B7280" strokeWidth={1} />;
-  });
+  // Actor anchor dots (de-duplicated by position for stacked validators)
+  const seenPositions = new Set<string>();
+  const anchors = allActorIds
+    .map((id) => {
+      const [x, y] = actorXY(id);
+      const key = `${Math.round(x)},${Math.round(y)}`;
+      if (seenPositions.has(key)) return null;
+      seenPositions.add(key);
+      return <circle key={id} cx={x} cy={y} r={3} fill="#374151" stroke="#6B7280" strokeWidth={1} />;
+    })
+    .filter(Boolean);
 
   return (
     <svg

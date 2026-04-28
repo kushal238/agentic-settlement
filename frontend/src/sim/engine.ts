@@ -4,8 +4,9 @@ import { interpolateValidatorEvents } from './synthetic';
 import { buildClaimRequest, SENDER, RECIPIENT, AMOUNT } from '../protocol/claim';
 import { buildProofHeader } from '../protocol/proof';
 import { getResource, postSettle } from '../protocol/api';
-import { consumeNonce } from '../protocol/wallet';
+import { consumeNonce, getCurrentNonce } from '../protocol/wallet';
 import { useSimStore } from '../store/simStore';
+import { getScenario } from './scenarios';
 
 let _eventCounter = 0;
 function eid(): string {
@@ -26,24 +27,31 @@ function makeEvent(
   return { id: eid(), t_start_us, t_end_us, step, kind, from, to, label, payload, outcome };
 }
 
-// Snapshot builders — derive world state from accumulated events
 const INITIAL_BALANCE = 10000;
 
-function buildInitialSnapshot(): WorldSnapshot {
+function buildInitialSnapshot(f: number): WorldSnapshot {
+  const n = 3 * f + 1;
+  const validators: Record<string, { validator_id: string; nonce_for_agent: number; balance_of_agent: number; phase: 'idle' }> = {};
+  for (let i = 0; i < n; i++) {
+    const vid = `validator-${i}`;
+    validators[vid] = { validator_id: vid, nonce_for_agent: 0, balance_of_agent: INITIAL_BALANCE, phase: 'idle' };
+  }
   return {
     client: { nonce: 0, balance: INITIAL_BALANCE, pending_claim: null, last_proof_quorum: null },
     resourceServer: { recipient: RECIPIENT, required_amount: AMOUNT, last_status: null, payload_hash: null },
-    facilitator: { f: 1, quorum_threshold: 3, certificates_collected: 0, phase: 'idle' },
-    validators: {
-      'validator-0': { validator_id: 'validator-0', nonce_for_agent: 0, balance_of_agent: INITIAL_BALANCE, phase: 'idle' },
-      'validator-1': { validator_id: 'validator-1', nonce_for_agent: 0, balance_of_agent: INITIAL_BALANCE, phase: 'idle' },
-      'validator-2': { validator_id: 'validator-2', nonce_for_agent: 0, balance_of_agent: INITIAL_BALANCE, phase: 'idle' },
-      'validator-3': { validator_id: 'validator-3', nonce_for_agent: 0, balance_of_agent: INITIAL_BALANCE, phase: 'idle' },
-    },
+    facilitator: { f, quorum_threshold: 2 * f + 1, certificates_collected: 0, phase: 'idle' },
+    validators,
   };
 }
 
-function applyEvent(prev: WorldSnapshot, ev: SimEvent, nonce: number, digest: string, quorumCount: number): WorldSnapshot {
+function applyEvent(
+  prev: WorldSnapshot,
+  ev: SimEvent,
+  nonce: number,
+  digest: string,
+  quorumCount: number,
+  claimAmount: number,
+): WorldSnapshot {
   const s = structuredClone(prev);
   const kind = ev.kind;
 
@@ -61,20 +69,24 @@ function applyEvent(prev: WorldSnapshot, ev: SimEvent, nonce: number, digest: st
   } else if (kind.startsWith('fanout_validator_')) {
     const idx = parseInt(kind.split('_')[2]!);
     const vid = `validator-${idx}`;
-    s.validators[vid] = { ...s.validators[vid]!, phase: 'verifying' };
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'verifying' };
   } else if (kind.startsWith('certificate_')) {
     const idx = parseInt(kind.split('_')[1]!);
     const vid = `validator-${idx}`;
-    s.validators[vid] = { ...s.validators[vid]!, phase: 'certified' };
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'certified' };
     s.facilitator.certificates_collected += 1;
   } else if (kind.startsWith('rejection_')) {
     const idx = parseInt(kind.split('_')[1]!);
     const vid = `validator-${idx}`;
-    s.validators[vid] = { ...s.validators[vid]!, phase: 'rejected' };
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'rejected' };
   } else if (kind.startsWith('timeout_')) {
     const idx = parseInt(kind.split('_')[1]!);
     const vid = `validator-${idx}`;
-    s.validators[vid] = { ...s.validators[vid]!, phase: 'dead' };
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'dead' };
+  } else if (kind.startsWith('divergent_')) {
+    const idx = parseInt(kind.split('_')[1]!);
+    const vid = `validator-${idx}`;
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'divergent' };
   } else if (kind === 'evaluate_round') {
     s.facilitator.phase = 'evaluating';
   } else if (kind === 'quorum_met') {
@@ -84,7 +96,7 @@ function applyEvent(prev: WorldSnapshot, ev: SimEvent, nonce: number, digest: st
   } else if (kind.startsWith('settle_')) {
     const idx = parseInt(kind.split('_')[1]!);
     const vid = `validator-${idx}`;
-    s.validators[vid] = { ...s.validators[vid]!, phase: 'settling' };
+    if (s.validators[vid]) s.validators[vid] = { ...s.validators[vid]!, phase: 'settling' };
   } else if (kind === 'return_result') {
     s.client.last_proof_quorum = quorumCount;
   } else if (kind === 'retry_request') {
@@ -94,26 +106,36 @@ function applyEvent(prev: WorldSnapshot, ev: SimEvent, nonce: number, digest: st
   } else if (kind === 'return_200') {
     s.resourceServer.last_status = 200;
     s.client.pending_claim = null;
-    s.client.balance -= AMOUNT;
-    // validators update balance after settle
+    s.client.balance -= claimAmount;
+    // Only update validators that actually participated in settlement (phase 'settling').
+    // Divergent/rejected/dead validators intentionally keep their pre-settlement state.
     for (const vid of Object.keys(s.validators)) {
-      s.validators[vid] = {
-        ...s.validators[vid]!,
-        nonce_for_agent: nonce + 1,
-        balance_of_agent: INITIAL_BALANCE - AMOUNT,
-        phase: 'settled',
-      };
+      if (s.validators[vid]!.phase === 'settling') {
+        s.validators[vid] = {
+          ...s.validators[vid]!,
+          nonce_for_agent: nonce + 1,
+          balance_of_agent: INITIAL_BALANCE - claimAmount,
+          phase: 'settled',
+        };
+      }
     }
   }
 
   return s;
 }
 
-function buildSnapshots(events: SimEvent[], nonce: number, digest: string, quorumCount: number): WorldSnapshot[] {
+function buildSnapshots(
+  events: SimEvent[],
+  nonce: number,
+  digest: string,
+  quorumCount: number,
+  f: number,
+  claimAmount: number,
+): WorldSnapshot[] {
   const snapshots: WorldSnapshot[] = [];
-  let current = buildInitialSnapshot();
+  let current = buildInitialSnapshot(f);
   for (const ev of events) {
-    current = applyEvent(current, ev, nonce, digest, quorumCount);
+    current = applyEvent(current, ev, nonce, digest, quorumCount, claimAmount);
     snapshots.push(structuredClone(current));
   }
   return snapshots;
@@ -121,14 +143,25 @@ function buildSnapshots(events: SimEvent[], nonce: number, digest: string, quoru
 
 export async function runSimulation(): Promise<void> {
   const store = useSimStore.getState();
+  const scenarioId = store.scenario;
+  const f = store.f;
+  const scenario = getScenario(scenarioId);
+
   store.reset();
   store.setStatus('running');
   _eventCounter = 0;
 
+  // Pre-warm: Python/uvicorn adds ~300ms cold-start latency to the first request.
+  // Fire a silent GET before the timer starts so the measured simulation is clean.
+  try { await getResource(); } catch { /* ignore — server may not be up yet */ }
+
   const allEvents: SimEvent[] = [];
 
   try {
-    const nonce = consumeNonce();
+    // Only advance the wallet nonce for happy path — failing scenarios use
+    // override parameters and are always rejected, so the backend nonce never
+    // increments. Consuming the counter for them would desync future happy paths.
+    const nonce = scenarioId === 'happy' ? consumeNonce() : getCurrentNonce();
 
     // Step 1: GET /resource (no proof)
     const { result: res1, t_start_us: t1s, t_end_us: t1e } = await measureAsync(() =>
@@ -143,26 +176,33 @@ export async function runSimulation(): Promise<void> {
     allEvents.push(makeEvent('return_402', 'resource-server', 'client', t1e, t1e + 500, 2,
       'resource-server.return_402 → client', res1.body));
 
-    // Step 3a: build + sign claim
+    // Step 3a: build + sign claim (with scenario overrides)
     const t3s = monotonic();
-    const { request: claimReq, digest } = await buildClaimRequest(nonce);
+    const { request: claimReq, digest, effectiveNonce, effectiveAmount } = await buildClaimRequest(
+      nonce,
+      scenario.claimOverride,
+    );
     const t3mid = monotonic();
     allEvents.push(makeEvent('build_claim', 'client', null, t3s, t3mid, 3,
-      'client.build_claim', { nonce, digest }));
+      'client.build_claim', {
+        nonce: effectiveNonce,
+        digest,
+        scenario: scenarioId !== 'happy' ? scenarioId : undefined,
+      }));
 
     const t3sign = monotonic();
     allEvents.push(makeEvent('sign_claim', 'client', null, t3mid, t3sign, 3,
-      `client.sign_claim (nonce=${nonce})`, { nonce }));
+      `client.sign_claim (nonce=${effectiveNonce})`, { nonce: effectiveNonce }));
 
     // Step 3b: POST /settle
     const { result: qr, t_start_us: tSettleS, t_end_us: tSettleE } = await measureAsync(() =>
       postSettle(claimReq),
     );
     allEvents.push(makeEvent('post_settle', 'client', 'facilitator', t3sign, tSettleS, 3,
-      'client.post_settle → facilitator', { sender: SENDER, nonce }));
+      'client.post_settle → facilitator', { sender: SENDER, nonce: effectiveNonce, scenario: scenarioId !== 'happy' ? scenarioId : undefined }));
 
     // Steps 4-6: synthetic intra-facilitator events
-    const initialSnap = buildInitialSnapshot();
+    const initialSnap = buildInitialSnapshot(f);
     const { events: synthEvents } = interpolateValidatorEvents(qr, tSettleS, tSettleE, initialSnap);
     allEvents.push(...synthEvents);
 
@@ -170,8 +210,14 @@ export async function runSimulation(): Promise<void> {
     allEvents.push(makeEvent('return_result', 'facilitator', 'client', tSettleE, tSettleE + 500, 7,
       'facilitator.return_result → client', { quorum_met: qr.quorum_met, success_count: qr.success_count }));
 
+    // For failing scenarios (or any quorum failure) — show the simulation as complete without continuing
     if (!qr.quorum_met) {
-      throw new Error(`Quorum not met — only ${qr.success_count} certificates.`);
+      allEvents.sort((a, b) => a.t_start_us - b.t_start_us);
+      const snapshots = buildSnapshots(allEvents, effectiveNonce, digest, qr.success_count, f, effectiveAmount);
+      store.setEvents(allEvents, snapshots);
+      store.setStatus('done');
+      store.play();
+      return;
     }
 
     const proofHeader = buildProofHeader(qr.payment_proof!);
@@ -195,9 +241,8 @@ export async function runSimulation(): Promise<void> {
       'resource-server.return_200 → client', res2.body,
       res2.status === 200 ? 'ok' : 'error'));
 
-    // Sort all events by start time, assign final snapshots
     allEvents.sort((a, b) => a.t_start_us - b.t_start_us);
-    const snapshots = buildSnapshots(allEvents, nonce, digest, qr.success_count);
+    const snapshots = buildSnapshots(allEvents, effectiveNonce, digest, qr.success_count, f, effectiveAmount);
 
     store.setEvents(allEvents, snapshots);
     store.setStatus('done');
@@ -205,7 +250,7 @@ export async function runSimulation(): Promise<void> {
   } catch (err) {
     allEvents.sort((a, b) => a.t_start_us - b.t_start_us);
     if (allEvents.length > 0) {
-      const snapshots = buildSnapshots(allEvents, 0, '', 0);
+      const snapshots = buildSnapshots(allEvents, 0, '', 0, f, AMOUNT);
       store.setEvents(allEvents, snapshots);
     }
     store.setError(err instanceof Error ? err.message : String(err));

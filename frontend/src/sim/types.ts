@@ -5,7 +5,19 @@ export type ActorId =
   | 'validator-0'
   | 'validator-1'
   | 'validator-2'
-  | 'validator-3';
+  | 'validator-3'
+  | 'validator-4'
+  | 'validator-5'
+  | 'validator-6'
+  | 'validator-7'
+  | 'validator-8'
+  | 'validator-9'
+  | 'validator-10'
+  | 'validator-11'
+  | 'validator-12'
+  | 'validator-13'
+  | 'validator-14'
+  | 'validator-15';
 
 export type ValidatorPhase =
   | 'idle'
@@ -14,7 +26,9 @@ export type ValidatorPhase =
   | 'rejected'
   | 'settling'
   | 'settled'
-  | 'dead';
+  | 'dead'
+  /** Quorum was met but this validator did not certify — state has diverged from the settled majority */
+  | 'divergent';
 
 export type ProtocolStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 

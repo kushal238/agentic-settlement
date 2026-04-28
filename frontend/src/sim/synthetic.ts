@@ -3,7 +3,7 @@ import type { QuorumResult } from '../protocol/types';
 
 // Timing constants as fractions of W = t1_us - t0_us
 // Fan-out is truly concurrent (ThreadPoolExecutor in facilitator.py),
-// so stride is near-zero — just network jitter between the 4 dispatches.
+// so stride is near-zero — just network jitter between dispatches.
 export const FANOUT_STRIDE_FRAC = 0.005;
 export const FANOUT_JITTER_FRAC = 0.008;
 export const PROC_LOGNORMAL_MU_FRAC = 0.40;
@@ -49,6 +49,32 @@ function nextId(): string {
   return `synth-${_idCounter++}`;
 }
 
+/**
+ * Derive all validator IDs involved in this round from the QuorumResult.
+ * Covers certified, rejected, and dead validators — works for any n=3f+1.
+ */
+function validatorIdsFromResult(result: QuorumResult): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const vid of [
+    ...Object.keys(result.certificates),
+    ...Object.keys(result.rejections),
+    ...result.dead,
+  ]) {
+    if (!seen.has(vid)) {
+      seen.add(vid);
+      ids.push(vid);
+    }
+  }
+  // Sort by numeric index for stable ordering
+  ids.sort((a, b) => {
+    const ai = parseInt(a.replace('validator-', ''));
+    const bi = parseInt(b.replace('validator-', ''));
+    return ai - bi;
+  });
+  return ids;
+}
+
 export function interpolateValidatorEvents(
   result: QuorumResult,
   t0_us: number,
@@ -59,7 +85,7 @@ export function interpolateValidatorEvents(
   const rng = new LCG(seedFromResult(result));
   const events: SimEvent[] = [];
 
-  const validatorIds = ['validator-0', 'validator-1', 'validator-2', 'validator-3'];
+  const validatorIds = validatorIdsFromResult(result);
   const checks = ['check_signature', 'check_identity', 'check_sanity', 'check_replay', 'check_balance'];
 
   // Per-validator timing
@@ -168,7 +194,7 @@ export function interpolateValidatorEvents(
     outcome: result.quorum_met ? 'ok' : 'error',
   });
 
-  // settle events for certified validators
+  // settle events — only for certified validators
   if (result.quorum_met) {
     const settleBase = quorumEventEnd + SETTLE_START_OFFSET_FRAC * W;
     const certified = Object.keys(result.certificates);
@@ -186,24 +212,51 @@ export function interpolateValidatorEvents(
         outcome: 'ok',
       });
     });
+
+    // divergent marker events — non-certifying validators when quorum IS met
+    // These fire after quorum so the UI shows state divergence prominently
+    const divergentBase = quorumEventEnd + SETTLE_START_OFFSET_FRAC * W + 0.005 * W;
+    for (const vid of validatorIds) {
+      if (!result.certificates[vid]) {
+        const i = validatorIds.indexOf(vid);
+        events.push({
+          id: nextId(),
+          t_start_us: divergentBase,
+          t_end_us: divergentBase + 0.01 * W,
+          step: 6,
+          kind: `divergent_${i}`,
+          from: 'facilitator',
+          to: null,
+          label: `${vid} — state divergent (did not settle)`,
+          payload: {
+            validator_id: vid,
+            reason: result.rejections[vid] ?? (result.dead.includes(vid) ? 'timeout' : 'unknown'),
+          },
+          outcome: 'error',
+        });
+      }
+    }
   }
 
   events.sort((a, b) => a.t_start_us - b.t_start_us);
 
-  // Build final snapshot by applying transitions
+  // Build final snapshot by applying phase transitions
   const snap = structuredClone(initialSnapshot);
 
   for (const vid of validatorIds) {
     const vt = vTimes[vid];
     if (!vt) continue;
-    const phase: ValidatorPhase =
-      vt.outcome === 'certified'
-        ? result.quorum_met
-          ? 'settled'
-          : 'certified'
-        : vt.outcome === 'rejected'
-        ? 'rejected'
-        : 'dead';
+
+    let phase: ValidatorPhase;
+    if (vt.outcome === 'certified') {
+      phase = result.quorum_met ? 'settled' : 'certified';
+    } else if (result.quorum_met) {
+      // Quorum was met but this validator didn't certify — its state has diverged
+      phase = 'divergent';
+    } else {
+      phase = vt.outcome === 'rejected' ? 'rejected' : 'dead';
+    }
+
     snap.validators[vid] = {
       ...snap.validators[vid]!,
       phase,

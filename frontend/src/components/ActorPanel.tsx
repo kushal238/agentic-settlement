@@ -1,4 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
+import { AlertTriangle } from 'lucide-react';
 import type { WorldSnapshot } from '../sim/types';
 
 interface Props {
@@ -35,6 +36,7 @@ function PhaseChip({ phase }: { phase: string }) {
     dead: 'bg-gray-800 text-gray-500',
     evaluating: 'bg-orange-900 text-orange-300',
     failed: 'bg-red-900 text-red-400',
+    divergent: 'bg-orange-900 text-orange-300 ring-1 ring-orange-600',
   };
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${colors[phase] ?? 'bg-gray-700 text-gray-300'}`}>
@@ -113,16 +115,31 @@ export function ActorPanel({ actorId, snapshot, prevSnapshot, selected, faulty, 
     return null;
   };
 
+  const isDivergent = isValidator && snapshot?.validators[actorId]?.phase === 'divergent';
+
   return (
     <motion.div
       layout
       className={`panel flex flex-col min-h-[140px] cursor-pointer transition-all duration-150 ${
-        faulty ? 'border-red-800 bg-red-950/30' : selected ? 'ring-1 ring-blue-500' : 'hover:border-gray-500'
+        faulty
+          ? 'border-red-800 bg-red-950/30'
+          : isDivergent
+          ? 'border-orange-700 bg-orange-950/20'
+          : selected
+          ? 'ring-1 ring-blue-500'
+          : 'hover:border-gray-500'
       }`}
       onClick={onClick}
     >
       <div className="panel-header flex items-center justify-between">
-        <span>{title}</span>
+        <div className="flex items-center gap-1.5">
+          <span>{title}</span>
+          {isDivergent && (
+            <span title="State divergent — this validator did not participate in settlement">
+              <AlertTriangle size={12} className="text-orange-400" />
+            </span>
+          )}
+        </div>
         {snapshot && isValidator && <PhaseChip phase={snapshot.validators[actorId]?.phase ?? 'idle'} />}
         {snapshot && actorId === 'facilitator' && <PhaseChip phase={snapshot.facilitator.phase} />}
       </div>

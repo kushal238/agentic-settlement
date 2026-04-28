@@ -45,3 +45,18 @@ export async function setFault(validatorId: string, faulty: boolean): Promise<vo
   const method = faulty ? 'POST' : 'DELETE';
   await fetch(`${FACILITATOR_BASE}/debug/fault/${validatorId}`, { method });
 }
+
+export interface ReconfigureResult {
+  f: number;
+  n: number;
+  validators: string[];
+}
+
+export async function reconfigureValidators(f: number): Promise<ReconfigureResult> {
+  const res = await fetch(`${FACILITATOR_BASE}/debug/reconfigure?f=${f}`, { method: 'POST' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Reconfigure failed (${res.status}): ${text}`);
+  }
+  return res.json() as Promise<ReconfigureResult>;
+}

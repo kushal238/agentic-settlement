@@ -28,9 +28,9 @@ function usePlaybackLoop() {
           useSimStore.getState().setCurrentTime(maxTime);
           useSimStore.getState().pause();
           lastRealRef.current = null;
-          return;
+        } else {
+          useSimStore.getState().setCurrentTime(newTime);
         }
-        useSimStore.getState().setCurrentTime(newTime);
       }
 
       if (playing) {

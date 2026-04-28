@@ -1,4 +1,5 @@
 import type { ClaimRequest } from './types';
+import type { ClaimOverride } from '../sim/scenarios';
 import { b64urlEncode } from './b64';
 import { getPublicKey, signPayload } from './wallet';
 
@@ -17,12 +18,22 @@ export function buildPayload(
   return new TextEncoder().encode(joined);
 }
 
-export async function buildClaimRequest(nonce: number): Promise<{
+export async function buildClaimRequest(
+  nonce: number,
+  overrides?: ClaimOverride,
+): Promise<{
   request: ClaimRequest;
   payload: Uint8Array;
   digest: string;
+  effectiveAmount: number;
+  effectiveRecipient: string;
+  effectiveNonce: number;
 }> {
-  const payload = buildPayload(SENDER, RECIPIENT, AMOUNT, nonce);
+  const effectiveNonce = overrides?.forceNonce ?? nonce;
+  const effectiveAmount = overrides?.amount ?? AMOUNT;
+  const effectiveRecipient = overrides?.recipient ?? RECIPIENT;
+
+  const payload = buildPayload(SENDER, effectiveRecipient, effectiveAmount, effectiveNonce);
   const [sig, pubKey] = await Promise.all([signPayload(payload), getPublicKey()]);
 
   // Short hex digest for display
@@ -35,13 +46,16 @@ export async function buildClaimRequest(nonce: number): Promise<{
   return {
     request: {
       sender: SENDER,
-      recipient: RECIPIENT,
-      amount: AMOUNT,
-      nonce,
+      recipient: effectiveRecipient,
+      amount: effectiveAmount,
+      nonce: effectiveNonce,
       sender_pubkey: b64urlEncode(pubKey),
       signature: b64urlEncode(sig),
     },
     payload,
     digest,
+    effectiveAmount,
+    effectiveRecipient,
+    effectiveNonce,
   };
 }
