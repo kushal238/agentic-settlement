@@ -18,21 +18,35 @@ This project uses the standard FastSet/FastPay parameterization: **`n = 3f+1`** 
 | 6 | Pre-settlement | Not implemented | Future: broadcast quorum proof to every validator; move the transaction into a **presettled** queue respecting nonce ordering across the pipeline. |
 | 7 | Settlement | [`Validator.settle`](../src/core/validator.py), [`Facilitator.submit_and_settle`](../src/core/facilitator.py) | Applies balances and nonce, clears pending. The facilitator drives settlement on every signing validator once quorum is reached; validators that rejected or timed out are intentionally left divergent until a future sync path reconciles them. |
 
-## End-to-end flow (conceptual)
+## End-to-end flow (target shape, f=1 so n=4)
+
+The diagram below mirrors the layout of the [x402 flow diagram](https://github.com/x402-foundation/x402#typical-x402-flow) and shows the full intended pay-to-unlock path. Solid lanes that are implemented today: **Client**, **Facilitator**, **Validators**. The **Resource Server** lane and the x402 `402 Payment Required` / `X-PAYMENT` retry handshake are **planned** -- today the `Client` calls the `Facilitator` in-process.
 
 ```mermaid
 sequenceDiagram
-  participant App as App_server_future
-  participant Fac as Facilitator
-  participant V as Validators_n_eq_3f_plus_1
+  autonumber
+  participant C as Client (AI Agent)
+  participant S as Resource Server
+  participant F as Facilitator
+  participant V as Validators (n = 3f+1)
 
-  App->>Fac: submit_and_settle(signed_Claim)
-  Fac->>V: verify_and_certify per_validator
-  V-->>Fac: Certificate_or_Rejection_or_timeout
-  Fac->>Fac: evaluate_round quorum_2f_plus_1
-  Fac->>V: settle on signing_validators_only
-  Fac-->>App: FacilitatorResult
+  C->>S: GET /resource
+  S-->>C: 402 Payment Required<br/>(price, recipient, facilitator)
+  Note over C: Build & sign Claim<br/>(sender, recipient, amount, nonce)
+  C->>F: submit_and_settle(claim)
+  F->>V: verify_and_certify(claim) — fan-out to all 3f+1
+  V-->>F: Certificates / Rejections
+  Note over F: evaluate_round<br/>dedupe, detect faults,<br/>check quorum ≥ 2f+1
+  F->>V: settle(claim) — signing validators only
+  Note over V: non-signers (rejected / dead)<br/>diverge until future step-6 catch-up
+  F-->>C: FacilitatorResult<br/>(quorum_met, certificates, rejections, dead, faults)
+  C->>S: GET /resource<br/>X-PAYMENT: quorum proof
+  S->>F: verify payment (optional)
+  F-->>S: OK
+  S-->>C: 200 OK + resource
 ```
+
+Each validator's internal check inside `verify_and_certify` is: sender signature valid, sender pubkey matches account owner, nonce matches, no pending claim for this sender, amount positive, balance sufficient. Inside `settle`: debit sender, credit recipient, increment sender nonce, clear pending slot.
 
 ## References
 
