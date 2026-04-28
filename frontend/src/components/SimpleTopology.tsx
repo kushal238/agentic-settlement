@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Zap, ZapOff } from 'lucide-react';
 import { useSimStore } from '../store/simStore';
 import type { SimEvent, WorldSnapshot } from '../sim/types';
@@ -228,9 +228,8 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
     setCentres({ bft: cx(bftRef), client: cx(clientRef), resource: cx(resourceRef) });
   }
 
-  useLayoutEffect(() => { recompute(); });
-
   useEffect(() => {
+    recompute(); // initial measurement after mount
     const obs = new ResizeObserver(() => recompute());
     if (containerRef.current) obs.observe(containerRef.current);
     return () => obs.disconnect();
