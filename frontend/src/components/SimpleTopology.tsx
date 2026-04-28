@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertTriangle, Zap, ZapOff } from 'lucide-react';
 import { useSimStore } from '../store/simStore';
 import type { SimEvent, WorldSnapshot } from '../sim/types';
@@ -15,34 +15,20 @@ interface Props {
 
 function phaseColor(phase: string): string {
   const map: Record<string, string> = {
-    idle: '#374151',
-    collecting: '#1e3a5f',
-    evaluating: '#3b2e00',
-    settled: '#064e3b',
-    failed: '#450a0a',
-    verifying: '#1e3a5f',
-    certified: '#064e3b',
-    rejected: '#450a0a',
-    settling: '#2e1065',
-    dead: '#1f2937',
-    divergent: '#431407',
+    idle: '#374151', collecting: '#1e3a5f', evaluating: '#3b2e00',
+    settled: '#064e3b', failed: '#450a0a', verifying: '#1e3a5f',
+    certified: '#064e3b', rejected: '#450a0a', settling: '#2e1065',
+    dead: '#1f2937', divergent: '#431407',
   };
   return map[phase] ?? '#374151';
 }
 
 function phaseText(phase: string): string {
   const map: Record<string, string> = {
-    idle: '#6B7280',
-    collecting: '#60A5FA',
-    evaluating: '#FBBF24',
-    settled: '#34D399',
-    failed: '#F87171',
-    verifying: '#60A5FA',
-    certified: '#34D399',
-    rejected: '#F87171',
-    settling: '#A78BFA',
-    dead: '#4B5563',
-    divergent: '#FB923C',
+    idle: '#6B7280', collecting: '#60A5FA', evaluating: '#FBBF24',
+    settled: '#34D399', failed: '#F87171', verifying: '#60A5FA',
+    certified: '#34D399', rejected: '#F87171', settling: '#A78BFA',
+    dead: '#4B5563', divergent: '#FB923C',
   };
   return map[phase] ?? '#9CA3AF';
 }
@@ -57,21 +43,24 @@ function eventColor(ev: SimEvent): string {
   return '#8B5CF6';
 }
 
-// ─── animated arrow packet ────────────────────────────────────────────────
+// ─── column mapping — new layout: bft | client | resource ─────────────────
+
+type Column = 'bft' | 'client' | 'resource';
+
+function columnOf(actorId: string): Column {
+  if (actorId === 'client') return 'client';
+  if (actorId === 'resource-server') return 'resource';
+  // facilitator and all validators share the BFT column
+  return 'bft';
+}
+
+// ─── packet type ──────────────────────────────────────────────────────────
 
 interface Packet {
   id: string;
   event: SimEvent;
   color: string;
-  progress: number; // 0..1
-}
-
-// Map from actorId to one of the 5 logical columns
-function columnOf(actorId: string): 'client' | 'resource' | 'facilitator' | 'validators' {
-  if (actorId === 'client') return 'client';
-  if (actorId === 'resource-server') return 'resource';
-  if (actorId === 'facilitator') return 'facilitator';
-  return 'validators';
+  progress: number;
 }
 
 // ─── Node box ─────────────────────────────────────────────────────────────
@@ -84,28 +73,25 @@ interface NodeBoxProps {
   onClick: () => void;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
-  faulty?: boolean;
   children?: React.ReactNode;
   style?: React.CSSProperties;
+  nodeRef?: React.RefObject<HTMLDivElement>;
 }
 
-function NodeBox({ label, sublabel, phase, selected, onClick, onMouseEnter, onMouseLeave, faulty, children, style }: NodeBoxProps) {
+function NodeBox({ label, sublabel, phase, selected, onClick, onMouseEnter, onMouseLeave, children, style, nodeRef }: NodeBoxProps) {
   const bg = phase ? phaseColor(phase) : '#1F2937';
-  const borderColor = faulty
-    ? '#7F1D1D'
-    : selected
-    ? '#3B82F6'
-    : '#374151';
+  const borderColor = selected ? '#3B82F6' : '#374151';
 
   return (
     <div
+      ref={nodeRef}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       style={{
         background: bg,
         border: `1.5px solid ${borderColor}`,
-        boxShadow: selected ? `0 0 0 1px #3B82F6` : undefined,
+        boxShadow: selected ? '0 0 0 1px #3B82F6' : undefined,
         borderRadius: 10,
         padding: '10px 14px',
         cursor: 'pointer',
@@ -122,6 +108,25 @@ function NodeBox({ label, sublabel, phase, selected, onClick, onMouseEnter, onMo
         </div>
       )}
       {children}
+    </div>
+  );
+}
+
+// ─── Small connector annotation ────────────────────────────────────────────
+
+function Connector({ label, sublabel }: { label: string; sublabel?: string }) {
+  return (
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 2,
+      flexShrink: 0,
+      userSelect: 'none',
+    }}>
+      <span style={{ fontSize: 9, color: '#4B5563', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ color: '#374151', fontSize: 16 }}>↔</span>
+      {sublabel && <span style={{ fontSize: 9, color: '#374151', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{sublabel}</span>}
     </div>
   );
 }
@@ -174,9 +179,9 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
     packetsRef.current.set(ev.id, { id: ev.id, event: ev, color: eventColor(ev), progress: 0 });
     if (!playing) {
       packetsRef.current.forEach((p) => { p.progress = 1; });
-      forceRender((n) => n + 1);
+      forceRender((c) => c + 1);
     }
-  }, [playheadIndex]);  // eslint-disable-line react-hooks/exhaustive-deps
+  }, [playheadIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!playing) {
@@ -193,42 +198,47 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
         if (p.progress >= 1) packetsRef.current.delete(k);
         dirty = true;
       });
-      if (dirty) forceRender((n) => n + 1);
+      if (dirty) forceRender((c) => c + 1);
       rafRef.current = requestAnimationFrame(tick);
     }
     rafRef.current = requestAnimationFrame(tick);
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [playing]);
 
-  // ── SVG layout ──
-  const svgRef = useRef<SVGSVGElement>(null);
+  // ── measure DOM centres for precise SVG arrows ──
   const containerRef = useRef<HTMLDivElement>(null);
-  const [dim, setDim] = useState({ w: 900, h: 180 });
+  const bftRef = useRef<HTMLDivElement>(null);
+  const clientRef = useRef<HTMLDivElement>(null);
+  const resourceRef = useRef<HTMLDivElement>(null);
+
+  const [centres, setCentres] = useState<Record<Column, number>>({ bft: 0.18, client: 0.5, resource: 0.82 });
+  const [dim, setDim] = useState({ w: 900, h: 200 });
+
+  function recompute() {
+    const container = containerRef.current;
+    if (!container) return;
+    const cr = container.getBoundingClientRect();
+    setDim({ w: cr.width, h: cr.height });
+
+    function cx(ref: React.RefObject<HTMLDivElement>) {
+      if (!ref.current) return 0;
+      const r = ref.current.getBoundingClientRect();
+      return (r.left + r.width / 2 - cr.left) / cr.width;
+    }
+    setCentres({ bft: cx(bftRef), client: cx(clientRef), resource: cx(resourceRef) });
+  }
+
+  useLayoutEffect(() => { recompute(); });
 
   useEffect(() => {
-    const obs = new ResizeObserver((entries) => {
-      const e = entries[0];
-      if (e) setDim({ w: e.contentRect.width, h: e.contentRect.height });
-    });
+    const obs = new ResizeObserver(() => recompute());
     if (containerRef.current) obs.observe(containerRef.current);
     return () => obs.disconnect();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Column X centres as fractions of width
-  const COL_X: Record<string, number> = {
-    client: 0.12,
-    resource: 0.35,
-    facilitator: 0.58,
-    validators: 0.82,
-  };
+  // ── build SVG arrows ──
   const MID_Y = 0.5;
 
-  function colX(col: ReturnType<typeof columnOf>) {
-    return COL_X[col]! * dim.w;
-  }
-  function midY() { return MID_Y * dim.h; }
-
-  // Build arrows from active packets
   const arrows: JSX.Element[] = [];
   packetsRef.current.forEach((packet) => {
     const { event, progress, color } = packet;
@@ -236,14 +246,13 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
 
     const fromCol = columnOf(event.from);
     const toCol = columnOf(event.to);
-    if (fromCol === toCol) return; // intra-column traffic — skip in simple view
+    if (fromCol === toCol) return;
 
-    const x1 = colX(fromCol);
-    const x2 = colX(toCol);
-    const y = midY();
-
+    const x1 = centres[fromCol] * dim.w;
+    const x2 = centres[toCol] * dim.w;
+    const y = MID_Y * dim.h;
     const cx = (x1 + x2) / 2;
-    const cy = y - 38;
+    const cy = y - 40;
     const t = progress;
     const px = (1 - t) * (1 - t) * x1 + 2 * (1 - t) * t * cx + t * t * x2;
     const py = (1 - t) * (1 - t) * y + 2 * (1 - t) * t * cy + t * t * y;
@@ -260,7 +269,7 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
         />
         <circle cx={px} cy={py} r={6} fill={color} opacity={0.9} />
         <text
-          x={(x1 + x2) / 2}
+          x={cx}
           y={cy - 6}
           textAnchor="middle"
           fontSize={9}
@@ -268,15 +277,18 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
           opacity={0.85}
           fontFamily="monospace"
         >
-          {event.label.length > 22 ? event.label.slice(0, 20) + '…' : event.label}
+          {event.label.length > 24 ? event.label.slice(0, 22) + '…' : event.label}
         </text>
       </g>,
     );
   });
 
-  // ── snapshot state shortcuts ──
+  // ── snapshot shortcuts ──
   const clientPhase = snapshot ? (snapshot.client.pending_claim ? 'active' : 'idle') : 'idle';
-  const rsPhase = snapshot ? (snapshot.resourceServer.last_status === 200 ? 'ok' : snapshot.resourceServer.last_status === 402 ? 'payment_required' : 'idle') : 'idle';
+  const rsPhase = snapshot
+    ? (snapshot.resourceServer.last_status === 200 ? 'ok'
+      : snapshot.resourceServer.last_status === 402 ? 'payment_required' : 'idle')
+    : 'idle';
   const facPhase = snapshot?.facilitator.phase ?? 'idle';
 
   const faultCount = Object.values(faults).filter(Boolean).length;
@@ -286,71 +298,31 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
 
   return (
     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
-      {/* SVG overlay for arrows — behind node boxes */}
-      <div ref={containerRef} style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-        <svg ref={svgRef} width="100%" height="100%" style={{ overflow: 'visible' }}>
+      {/* SVG overlay — pointer-events: none so DOM clicks pass through */}
+      <div
+        ref={containerRef}
+        style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+      >
+        <svg width="100%" height="100%" style={{ overflow: 'visible' }}>
           {arrows}
         </svg>
       </div>
 
-      {/* Node row */}
+      {/* ── Node row: BFT | connector | Client | connector | API Server ── */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 16,
-        padding: '16px 24px',
+        gap: 12,
+        padding: '14px 20px',
         position: 'relative',
         zIndex: 1,
       }}>
 
-        {/* Client */}
-        <NodeBox
-          sublabel="PC / Agent"
-          label="Client"
-          phase={clientPhase}
-          selected={selectedActor === 'client'}
-          onClick={() => onSelectActor('client')}
-          onMouseEnter={() => onHoverActor('client')}
-          onMouseLeave={() => onHoverActor(null)}
-          style={{ flex: 1 }}
-        >
-          {snapshot && (
-            <div style={{ marginTop: 6, fontSize: 10, color: '#6B7280', fontFamily: 'monospace' }}>
-              <div>balance: {snapshot.client.balance}</div>
-              <div>nonce: {snapshot.client.nonce}</div>
-            </div>
-          )}
-        </NodeBox>
-
-        {/* Arrow spacer label */}
-        <div style={{ color: '#374151', fontSize: 18, userSelect: 'none', flexShrink: 0 }}>→</div>
-
-        {/* Resource Server */}
-        <NodeBox
-          sublabel="API Server"
-          label="Resource Server"
-          phase={rsPhase}
-          selected={selectedActor === 'resource-server'}
-          onClick={() => onSelectActor('resource-server')}
-          onMouseEnter={() => onHoverActor('resource-server')}
-          onMouseLeave={() => onHoverActor(null)}
-          style={{ flex: 1 }}
-        >
-          {snapshot && (
-            <div style={{ marginTop: 6, fontSize: 10, color: '#6B7280', fontFamily: 'monospace' }}>
-              <div>needs: {snapshot.resourceServer.required_amount}</div>
-              <div>status: {snapshot.resourceServer.last_status ?? '—'}</div>
-            </div>
-          )}
-        </NodeBox>
-
-        <div style={{ color: '#374151', fontSize: 18, userSelect: 'none', flexShrink: 0 }}>↔</div>
-
-        {/* Facilitator / BFT Server containing validator threads */}
+        {/* ── LEFT: BFT Server (Facilitator + validator threads) ── */}
         <div
+          ref={bftRef}
           style={{
-            flex: 2.2,
+            flex: 2,
             border: `1.5px solid ${selectedActor === 'facilitator' ? '#3B82F6' : '#374151'}`,
             borderRadius: 12,
             background: phaseColor(facPhase),
@@ -363,27 +335,19 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
           onMouseLeave={() => onHoverActor(null)}
         >
           <div style={{ fontSize: 11, color: '#9CA3AF' }}>BFT Server</div>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 6,
-          }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#F3F4F6' }}>Facilitator</div>
             <div style={{ fontSize: 10, color: phaseText(facPhase), fontFamily: 'monospace' }}>{facPhase}</div>
           </div>
           {snapshot && (
-            <div style={{ fontSize: 10, color: '#6B7280', fontFamily: 'monospace', marginBottom: 8 }}>
+            <div style={{ fontSize: 10, color: '#6B7280', fontFamily: 'monospace', marginBottom: 6 }}>
               certs {snapshot.facilitator.certificates_collected}/{snapshot.facilitator.quorum_threshold} needed
             </div>
           )}
 
           {/* Quorum badge */}
           <div style={{
-            display: 'inline-block',
-            fontSize: 9,
-            padding: '1px 6px',
-            borderRadius: 99,
+            display: 'inline-block', fontSize: 9, padding: '1px 6px', borderRadius: 99,
             background: quorumPossible ? '#064e3b' : '#450a0a',
             color: quorumPossible ? '#34D399' : '#F87171',
             marginBottom: 8,
@@ -408,22 +372,15 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
                   onMouseEnter={() => onHoverActor(vid)}
                   onMouseLeave={() => onHoverActor(null)}
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '3px 6px',
-                    borderRadius: 6,
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '3px 6px', borderRadius: 6,
                     background: isFaulty ? '#450a0a' : isSelected ? '#1e3a5f' : '#111827',
                     border: `1px solid ${isSelected ? '#3B82F6' : isFaulty ? '#7F1D1D' : '#1F2937'}`,
-                    cursor: 'pointer',
-                    transition: 'all 0.12s',
+                    cursor: 'pointer', transition: 'all 0.12s',
                   }}
                 >
-                  {/* Thread indicator */}
                   <div style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
+                    width: 6, height: 6, borderRadius: '50%',
                     background: isFaulty ? '#EF4444' : phaseText(phase),
                     flexShrink: 0,
                   }} />
@@ -438,20 +395,15 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
                       bal:{vs.balance_of_agent ?? '—'}
                     </span>
                   )}
-                  {/* Fault injection button */}
                   <button
                     onClick={(e) => toggleFault(vid, e)}
                     disabled={toggling === vid}
                     title={isFaulty ? 'Clear fault' : 'Inject Byzantine fault'}
                     style={{
-                      background: 'none',
-                      border: 'none',
-                      padding: '0 2px',
-                      cursor: 'pointer',
+                      background: 'none', border: 'none', padding: '0 2px', cursor: 'pointer',
                       color: isFaulty ? '#EF4444' : '#4B5563',
                       opacity: toggling === vid ? 0.4 : 1,
-                      display: 'flex',
-                      alignItems: 'center',
+                      display: 'flex', alignItems: 'center',
                     }}
                   >
                     {isFaulty ? <ZapOff size={10} /> : <Zap size={10} />}
@@ -464,6 +416,55 @@ export function SimpleTopology({ snapshot, selectedActor, onSelectActor, onHover
             })}
           </div>
         </div>
+
+        {/* Connector: BFT ↔ Client */}
+        <Connector label="get claim cert" sublabel="fanout / vote" />
+
+        {/* ── CENTER: Client (Agent / PC) ── */}
+        <NodeBox
+          nodeRef={clientRef}
+          sublabel="PC / Agent"
+          label="Client"
+          phase={clientPhase}
+          selected={selectedActor === 'client'}
+          onClick={() => onSelectActor('client')}
+          onMouseEnter={() => onHoverActor('client')}
+          onMouseLeave={() => onHoverActor(null)}
+          style={{ flex: 1 }}
+        >
+          {snapshot && (
+            <div style={{ marginTop: 6, fontSize: 10, color: '#6B7280', fontFamily: 'monospace' }}>
+              <div>balance: {snapshot.client.balance}</div>
+              <div>nonce: {snapshot.client.nonce}</div>
+            </div>
+          )}
+        </NodeBox>
+
+        {/* Connector: Client → API Server */}
+        <Connector label="present cert" sublabel="get resource" />
+
+        {/* ── RIGHT: Resource Server (API Server) ── */}
+        <NodeBox
+          nodeRef={resourceRef}
+          sublabel="API Server"
+          label="Resource Server"
+          phase={rsPhase}
+          selected={selectedActor === 'resource-server'}
+          onClick={() => onSelectActor('resource-server')}
+          onMouseEnter={() => onHoverActor('resource-server')}
+          onMouseLeave={() => onHoverActor(null)}
+          style={{ flex: 1 }}
+        >
+          {snapshot && (
+            <div style={{ marginTop: 6, fontSize: 10, color: '#6B7280', fontFamily: 'monospace' }}>
+              <div>needs: {snapshot.resourceServer.required_amount}</div>
+              <div>status: {snapshot.resourceServer.last_status ?? '—'}</div>
+            </div>
+          )}
+          <div style={{ marginTop: 6, fontSize: 9, color: '#374151', fontFamily: 'monospace', lineHeight: 1.4 }}>
+            verifies cert only —<br />no validator contact
+          </div>
+        </NodeBox>
       </div>
     </div>
   );
