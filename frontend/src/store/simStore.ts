@@ -5,7 +5,7 @@ import { eventIndexAtTime } from '../sim/timeline';
 
 export type SimStatus = 'idle' | 'running' | 'done' | 'error';
 export type Speed = 0.001 | 0.005 | 0.02 | 0.05;
-export type ViewMode = 'simple' | 'detailed';
+export type ViewMode = 'simple' | 'detailed' | 'sequence';
 
 interface SimStore {
   events: SimEvent[];

@@ -4,6 +4,7 @@ import { ActorPanel } from './ActorPanel';
 import { ValidatorGrid } from './ValidatorGrid';
 import { FlowCanvas } from './FlowCanvas';
 import { SimpleTopology } from './SimpleTopology';
+import { SwimlaneView } from './SwimlaneView';
 import { Timeline } from './Timeline';
 import { MethodLog } from './MethodLog';
 import { Inspector } from './Inspector';
@@ -71,7 +72,7 @@ export function App() {
       {/* Top bar */}
       <Controls />
 
-      {/* Top visualization — simple or detailed */}
+      {/* Top visualization — simple, sequence, or detailed */}
       {viewMode === 'simple' ? (
         <div className="px-4 pt-2 pb-1" style={{ minHeight: 220 }}>
           <SimpleTopology
@@ -81,6 +82,8 @@ export function App() {
             onHoverActor={setHoveredActor}
           />
         </div>
+      ) : viewMode === 'sequence' ? (
+        <SwimlaneView />
       ) : (
         /* Detailed: original actor band + flow canvas */
         <div className="relative px-4 pt-3 pb-1" style={{ minHeight: 220 }}>

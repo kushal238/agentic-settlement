@@ -178,37 +178,97 @@ export async function runSimulation(): Promise<void> {
 
     // Step 3a: build + sign claim (with scenario overrides)
     const t3s = monotonic();
-    const { request: claimReq, digest, effectiveNonce, effectiveAmount } = await buildClaimRequest(
+    const { request: claimReq, payload: claimPayloadBytes, digest, effectiveNonce, effectiveAmount, effectiveRecipient } = await buildClaimRequest(
       nonce,
       scenario.claimOverride,
     );
+    const canonicalPayload = new TextDecoder().decode(claimPayloadBytes);
     const t3mid = monotonic();
     allEvents.push(makeEvent('build_claim', 'client', null, t3s, t3mid, 3,
       'client.build_claim', {
+        sender: claimReq.sender,
+        recipient: effectiveRecipient,
+        amount: effectiveAmount,
         nonce: effectiveNonce,
+        sender_pubkey_b64: claimReq.sender_pubkey,
+        canonical_payload: canonicalPayload,
         digest,
+        encoding: 'length-prefixed: "len:field" joined by | (delimiter-collision-safe)',
         scenario: scenarioId !== 'happy' ? scenarioId : undefined,
       }));
 
     const t3sign = monotonic();
     allEvents.push(makeEvent('sign_claim', 'client', null, t3mid, t3sign, 3,
-      `client.sign_claim (nonce=${effectiveNonce})`, { nonce: effectiveNonce }));
+      `client.sign_claim (nonce=${effectiveNonce})`, {
+        algorithm: 'Ed25519',
+        signed_bytes: canonicalPayload,
+        signature_b64: claimReq.signature,
+        nonce: effectiveNonce,
+        note: 'sender_pubkey is sent alongside but is NOT part of the signed payload',
+      }));
 
     // Step 3b: POST /settle
     const { result: qr, t_start_us: tSettleS, t_end_us: tSettleE } = await measureAsync(() =>
       postSettle(claimReq),
     );
     allEvents.push(makeEvent('post_settle', 'client', 'facilitator', t3sign, tSettleS, 3,
-      'client.post_settle → facilitator', { sender: SENDER, nonce: effectiveNonce, scenario: scenarioId !== 'happy' ? scenarioId : undefined }));
+      'client.post_settle → facilitator', {
+        endpoint: 'POST http://localhost:8001/settle',
+        request_body: {
+          sender: claimReq.sender,
+          recipient: claimReq.recipient,
+          amount: claimReq.amount,
+          nonce: claimReq.nonce,
+          sender_pubkey_b64: claimReq.sender_pubkey,
+          signature_b64: claimReq.signature,
+        },
+        claim_digest: digest,
+        scenario: scenarioId !== 'happy' ? scenarioId : undefined,
+      }));
 
-    // Steps 4-6: synthetic intra-facilitator events
+    // Steps 4-6: synthetic intra-facilitator events.
+    // Settle now runs as a BackgroundTask on the backend (after /settle returns),
+    // so place settle events AFTER tSettleE to match the real protocol order:
+    // quorum → return proof to client → settle validators in parallel with retry.
     const initialSnap = buildInitialSnapshot(f);
-    const { events: synthEvents } = interpolateValidatorEvents(qr, tSettleS, tSettleE, initialSnap);
+    const { events: synthEvents } = interpolateValidatorEvents(qr, tSettleS, tSettleE, initialSnap, {
+      settleStartUs: tSettleE + 200,
+    });
     allEvents.push(...synthEvents);
+
+    // Build payment proof — happens AFTER quorum is reached but BEFORE the response goes out.
+    // Anchored to tSettleE working backwards (proof building is the last thing before return).
+    if (qr.quorum_met && qr.proof_build_us != null && qr.proof_build_us > 0) {
+      const proofEnd = tSettleE - 50;
+      const proofStart = Math.max(tSettleS + 1, proofEnd - qr.proof_build_us);
+      allEvents.push(makeEvent('build_payment_proof', 'facilitator', null, proofStart, proofEnd, 6,
+        'facilitator.build_payment_proof', {
+          duration_us: qr.proof_build_us,
+          timing_source: 'measured by backend (time.perf_counter_ns around build_payment_proof + Pydantic serialization)',
+          actions: [
+            'sha256(canonical_claim_payload).hex() → claim_digest',
+            'b64url-encode each validator signature + pubkey',
+            'pack { claim, claim_digest, success_count, quorum_threshold, certificates } into JSON',
+            'Pydantic model serialization for FastAPI response',
+          ],
+          note: 'proof depends only on certificates (gathered during quorum), NOT on settle. Built before return so the response carries it.',
+        }));
+    }
 
     // Step 7: return settlement result
     allEvents.push(makeEvent('return_result', 'facilitator', 'client', tSettleE, tSettleE + 500, 7,
-      'facilitator.return_result → client', { quorum_met: qr.quorum_met, success_count: qr.success_count }));
+      'facilitator.return_result → client', {
+        quorum_met: qr.quorum_met,
+        success_count: qr.success_count,
+        quorum_threshold: 2 * f + 1,
+        n_validators: 3 * f + 1,
+        certificates: qr.certificates,
+        rejections: qr.rejections,
+        dead: qr.dead,
+        payment_proof: qr.payment_proof,
+        protocol_note: 'returned the moment quorum was met and the proof was built. settle on signing validators is scheduled as a FastAPI BackgroundTask and runs AFTER this response is on the wire — visible as settle_* events below.',
+        cert_signature_note: 'each certificate is Ed25519 over the canonical claim payload, signed by that validator\'s key',
+      }));
 
     // For failing scenarios (or any quorum failure) — show the simulation as complete without continuing
     if (!qr.quorum_met) {
@@ -223,21 +283,43 @@ export async function runSimulation(): Promise<void> {
     const proofHeader = buildProofHeader(qr.payment_proof!);
 
     // Step 8: retry GET /resource with proof
-    const t8pre = tSettleE + 1000;
     const { result: res2, t_start_us: t8s, t_end_us: t8e } = await measureAsync(() =>
       getResource(proofHeader),
     );
-    allEvents.push(makeEvent('retry_request', 'client', 'resource-server', t8pre, t8s, 8,
-      'client.retry_request → resource-server'));
+    // retry_request must display strictly after return_result and before verify_proof.
+    // Anchor retry to the gap between return_result end (~tSettleE + 500) and t8s (real
+    // start of GET /resource). If JS busy-time was tiny (t8s ≈ tSettleE), force a
+    // 100µs slot so the sort still lands retry → verify → 200 in order.
+    const retryStart = tSettleE + 600;
+    const retryEnd = Math.max(retryStart + 100, t8s);
+    allEvents.push(makeEvent('retry_request', 'client', 'resource-server', retryStart, retryEnd, 8,
+      'client.retry_request → resource-server', {
+        endpoint: 'GET http://localhost:8000/resource',
+        header: 'X-Payment-Proof: <base64url-encoded JSON>',
+        proof_header_b64_truncated: proofHeader.length > 80 ? `${proofHeader.slice(0, 80)}…(${proofHeader.length} chars)` : proofHeader,
+        decoded_proof: qr.payment_proof,
+      }));
 
     // Steps 9-10: server verifies proof (approximated in the RTT window)
-    const verifyStart = t8s;
-    const verifyEnd = t8e - 500;
+    const verifyStart = retryEnd;
+    const verifyEnd = Math.max(verifyStart + 200, t8e - 500);
     allEvents.push(makeEvent('verify_proof', 'resource-server', null, verifyStart, verifyEnd, 9,
-      'resource-server.verify_proof', { valid: res2.status === 200 }));
+      'resource-server.verify_proof', {
+        valid: res2.status === 200,
+        checks: [
+          'sender Ed25519 signature over canonical claim payload',
+          'sha256(payload) == claim_digest',
+          'each validator certificate signature verifies',
+          `success_count >= quorum_threshold (${2 * f + 1})`,
+          'recipient matches expected (server-recipient)',
+          'amount >= price (10)',
+        ],
+        note: 'fully offline, no callback to facilitator or validators',
+      }));
 
     // Step 11: return 200
-    allEvents.push(makeEvent('return_200', 'resource-server', 'client', verifyEnd, t8e, 11,
+    const return200End = Math.max(verifyEnd + 100, t8e);
+    allEvents.push(makeEvent('return_200', 'resource-server', 'client', verifyEnd, return200End, 11,
       'resource-server.return_200 → client', res2.body,
       res2.status === 200 ? 'ok' : 'error'));
 

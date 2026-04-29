@@ -38,3 +38,7 @@ class QuorumResult(BaseModel):
     dead: list[str]
     faults: list[FaultEventOut]
     payment_proof: PaymentProofOut | None = None
+    # Wall-clock timings measured by the facilitator process. Microseconds.
+    # settle_offsets_us[vid] = [start_us, end_us] relative to settle phase start.
+    settle_offsets_us: dict[str, tuple[int, int]] = {}
+    proof_build_us: int = 0

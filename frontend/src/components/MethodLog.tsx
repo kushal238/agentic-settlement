@@ -31,7 +31,6 @@ export function MethodLog({ onSelect, selectedEventId }: Props) {
   const events = useSimStore((s) => s.events);
   const epoch = useSimStore((s) => s.epoch);
   const playheadIndex = useSimStore((s) => s.playheadIndex);
-  const setPlayheadIndex = useSimStore((s) => s.setPlayheadIndex);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to active event
@@ -73,7 +72,6 @@ export function MethodLog({ onSelect, selectedEventId }: Props) {
                   isActive ? 'bg-gray-800 border-blue-500' : isSelected ? 'bg-gray-850 border-gray-600' : 'border-transparent'
                 }`}
                 onClick={() => {
-                  setPlayheadIndex(idx);
                   onSelect(ev.id);
                 }}
               >

@@ -35,6 +35,10 @@ export interface QuorumResult {
   dead: string[];
   faults: FaultEventOut[];
   payment_proof: PaymentProofOut | null;
+  /** [start_us, end_us] per signing validator, relative to settle phase start (microseconds). */
+  settle_offsets_us?: Record<string, [number, number]>;
+  /** Wall-clock microseconds spent building the payment proof + serializing the response model. */
+  proof_build_us?: number;
 }
 
 export interface PaymentRequirements {
