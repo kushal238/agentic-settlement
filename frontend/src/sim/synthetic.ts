@@ -80,6 +80,7 @@ export function interpolateValidatorEvents(
   t0_us: number,
   t1_us: number,
   initialSnapshot: WorldSnapshot,
+  options?: { settleStartUs?: number },
 ): { events: SimEvent[]; finalSnapshot: WorldSnapshot } {
   const W = t1_us - t0_us;
   const rng = new LCG(seedFromResult(result));
@@ -87,6 +88,15 @@ export function interpolateValidatorEvents(
 
   const validatorIds = validatorIdsFromResult(result);
   const checks = ['check_signature', 'check_identity', 'check_sanity', 'check_replay', 'check_balance'];
+  const n = validatorIds.length;
+  const f = Math.max(1, Math.floor((n - 1) / 3));
+  const CHECK_DESCRIPTIONS: Record<string, string> = {
+    check_signature: 'Ed25519.verify(claim_payload, sender_signature, claim.sender_pubkey)',
+    check_identity: 'claim.sender_pubkey == account.owner (binds claim to registered account owner)',
+    check_sanity: 'sender account exists, recipient account exists, amount > 0',
+    check_replay: 'claim.nonce == account.nonce (one-shot per nonce, prevents double-spend)',
+    check_balance: 'account.balance >= claim.amount (sufficient funds)',
+  };
 
   // Per-validator timing
   const vTimes: Record<string, { fanoutStart: number; procEnd: number; outcome: 'certified' | 'rejected' | 'timeout' }> = {};
@@ -128,6 +138,11 @@ export function interpolateValidatorEvents(
       from: 'facilitator',
       to: vid as ActorId,
       label: `facilitator.fanout → ${vid}`,
+      payload: {
+        validator_id: vid,
+        transport: 'in-process call (ThreadPoolExecutor); HTTP/gRPC in a real distributed deployment',
+        per_validator_timeout_s: 5.0,
+      },
       outcome: 'ok',
     });
 
@@ -135,15 +150,22 @@ export function interpolateValidatorEvents(
     const checkDuration = (procEnd - fanoutStart - 0.005 * W) / checks.length;
     for (let ci = 0; ci < checks.length; ci++) {
       const cs = fanoutStart + 0.005 * W + ci * checkDuration;
+      const checkName = checks[ci]!;
       events.push({
         id: nextId(),
         t_start_us: cs,
         t_end_us: cs + checkDuration,
         step: 4,
-        kind: `${checks[ci]}_${i}`,
+        kind: `${checkName}_${i}`,
         from: vid as ActorId,
         to: null,
-        label: `${vid}.${checks[ci]}`,
+        label: `${vid}.${checkName}`,
+        payload: {
+          validator_id: vid,
+          check: checkName,
+          description: CHECK_DESCRIPTIONS[checkName],
+          rejection_reason_if_fails: `${checkName.replace('check_', '')} mismatch`,
+        },
         outcome: 'ok',
       });
     }
@@ -176,7 +198,22 @@ export function interpolateValidatorEvents(
     from: 'facilitator',
     to: null,
     label: 'facilitator.evaluate_round',
-    payload: { success_count: result.success_count, quorum_met: result.quorum_met },
+    payload: {
+      n_validators: n,
+      f,
+      quorum_threshold: 2 * f + 1,
+      success_count: result.success_count,
+      rejections: Object.keys(result.rejections).length,
+      dead: result.dead.length,
+      quorum_met: result.quorum_met,
+      checks_run_centrally: [
+        'each cert.validator_id matches its dict key',
+        'each cert.claim_payload matches the round claim',
+        'each cert.signature re-verified against cert.pubkey (defense in depth)',
+        'no equivocation: validator did not return cert AND rejection',
+        'no duplicate conflicting certs from same validator',
+      ],
+    },
     outcome: result.quorum_met ? 'ok' : 'error',
   });
 
@@ -196,19 +233,57 @@ export function interpolateValidatorEvents(
 
   // settle events — only for certified validators
   if (result.quorum_met) {
-    const settleBase = quorumEventEnd + SETTLE_START_OFFSET_FRAC * W;
+    const asyncMode = options?.settleStartUs != null;
+    const settleBase = asyncMode
+      ? options!.settleStartUs!
+      : quorumEventEnd + SETTLE_START_OFFSET_FRAC * W;
     const certified = Object.keys(result.certificates);
+    const realOffsets = result.settle_offsets_us;
+    const usingRealTimings = !asyncMode && !!realOffsets && Object.keys(realOffsets).length === certified.length;
+    const ASYNC_SETTLE_STRIDE_US = 200;
     certified.forEach((vid, idx) => {
       const i = validatorIds.indexOf(vid);
+      let start_us: number;
+      let end_us: number;
+      if (usingRealTimings && realOffsets![vid]) {
+        const [startOff, endOff] = realOffsets![vid]!;
+        start_us = settleBase + startOff;
+        end_us = settleBase + endOff;
+      } else if (asyncMode) {
+        start_us = settleBase + idx * ASYNC_SETTLE_STRIDE_US;
+        end_us = start_us + ASYNC_SETTLE_STRIDE_US * 0.8;
+      } else {
+        start_us = settleBase + idx * SETTLE_STRIDE_FRAC * W;
+        end_us = start_us + 0.01 * W;
+      }
       events.push({
         id: nextId(),
-        t_start_us: settleBase + idx * SETTLE_STRIDE_FRAC * W,
-        t_end_us: settleBase + idx * SETTLE_STRIDE_FRAC * W + 0.01 * W,
+        t_start_us: start_us,
+        t_end_us: end_us,
         step: 6,
         kind: `settle_${i}`,
         from: 'facilitator',
         to: vid as ActorId,
         label: `facilitator.settle → ${vid}`,
+        payload: {
+          validator_id: vid,
+          actions: [
+            'sender_account.balance -= claim.amount',
+            'recipient_account.balance += claim.amount',
+            'sender_account.nonce += 1',
+            'pending_claims.pop(claim.sender)',
+          ],
+          duration_us: usingRealTimings && realOffsets![vid]
+            ? realOffsets![vid]![1] - realOffsets![vid]![0]
+            : null,
+          timing_source: usingRealTimings
+            ? 'measured by backend (time.perf_counter_ns around client.settle call)'
+            : asyncMode
+            ? 'async settle: scheduled as FastAPI BackgroundTask AFTER /settle response; synthetic stride for visualization'
+            : 'synthetic interpolation',
+          execution_mode: asyncMode ? 'async (after response)' : 'sync (before response)',
+          note: 'only signing validators are settled; non-signers stay divergent until a future catch-up path',
+        },
         outcome: 'ok',
       });
     });

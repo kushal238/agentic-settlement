@@ -2,8 +2,9 @@
 
 import base64
 import logging
+import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from nacl.signing import VerifyKey
 
 from src.core.claim import Claim
@@ -58,9 +59,12 @@ def result_to_response(result: FacilitatorResult) -> QuorumResult:
         FaultEventOut(kind=f.kind, validator_id=f.validator_id, detail=f.detail)
         for f in result.faults
     ]
+    proof_build_start_ns = time.perf_counter_ns()
     payment_proof = None
     if result.quorum_met:
         payment_proof = PaymentProofOut(**build_payment_proof(result, config.BFT_F))
+    proof_build_end_ns = time.perf_counter_ns()
+    proof_build_us = (proof_build_end_ns - proof_build_start_ns) // 1000
 
     return QuorumResult(
         quorum_met=result.quorum_met,
@@ -70,11 +74,23 @@ def result_to_response(result: FacilitatorResult) -> QuorumResult:
         dead=list(result.dead),
         faults=faults,
         payment_proof=payment_proof,
+        settle_offsets_us=result.settle_offsets_us,
+        proof_build_us=proof_build_us,
     )
 
 
+def _settle_signers(facilitator: Facilitator, claim: Claim, signer_ids: set[str]) -> None:
+    """Apply settle on every signing validator. Runs as a background task AFTER the
+    HTTP response has been returned to the client, so the agent gets the proof as
+    soon as quorum is mathematically met. Validator state convergence happens
+    asynchronously."""
+    for vid, client in facilitator._validators:
+        if vid in signer_ids:
+            client.settle(claim)
+
+
 @router.post("/settle", response_model=QuorumResult)
-async def settle(claim_req: ClaimRequest, request: Request) -> QuorumResult:
+async def settle(claim_req: ClaimRequest, request: Request, background_tasks: BackgroundTasks) -> QuorumResult:
     try:
         claim = claim_from_request(claim_req)
     except Exception as exc:
@@ -84,5 +100,14 @@ async def settle(claim_req: ClaimRequest, request: Request) -> QuorumResult:
         raise HTTPException(status_code=400, detail="Invalid sender signature")
 
     facilitator: Facilitator = request.app.state.facilitator
-    result = facilitator.submit_and_settle(claim)
-    return result_to_response(result)
+    # Phase 1: fan-out + verify + evaluate quorum (no settle yet)
+    result = facilitator.submit_claim(claim)
+    # Phase 2: build the response, including the payment proof if quorum was met
+    response = result_to_response(result)
+    # Phase 3: schedule settle to run AFTER the response is sent. The proof in the
+    # response is mathematically final the moment quorum is reached; settle is
+    # internal validator bookkeeping that the client does not need to wait for.
+    if result.quorum_met:
+        signer_ids = set(result.certificates.keys())
+        background_tasks.add_task(_settle_signers, facilitator, claim, signer_ids)
+    return response

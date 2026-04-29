@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, RotateCcw, AlertCircle, CheckCircle2, Loader2, XCircle, Layers, Grid2X2 } from 'lucide-react';
+import { Play, RotateCcw, AlertCircle, CheckCircle2, Loader2, XCircle, Layers, Grid2X2, GitBranch } from 'lucide-react';
 import { useSimStore } from '../store/simStore';
 import type { ViewMode } from '../store/simStore';
 import { runSimulation } from '../sim/engine';
@@ -137,21 +137,29 @@ export function Controls() {
 
       {/* View mode toggle */}
       <div className="flex items-center gap-0.5 shrink-0">
-        {(['simple', 'detailed'] as ViewMode[]).map((m) => (
-          <button
-            key={m}
-            onClick={() => setViewMode(m)}
-            title={m === 'simple' ? 'Simple high-level view' : 'Detailed actor view'}
-            className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
-              viewMode === m
-                ? 'bg-gray-600 text-white'
-                : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-            }`}
-          >
-            {m === 'simple' ? <Layers size={12} /> : <Grid2X2 size={12} />}
-            {m === 'simple' ? 'Simple' : 'Detailed'}
-          </button>
-        ))}
+        {(['simple', 'detailed', 'sequence'] as ViewMode[]).map((m) => {
+          const meta =
+            m === 'simple'
+              ? { icon: <Layers size={12} />, label: 'Simple', title: 'Simple high-level view' }
+              : m === 'detailed'
+              ? { icon: <Grid2X2 size={12} />, label: 'Detailed', title: 'Detailed actor view' }
+              : { icon: <GitBranch size={12} />, label: 'Sequence', title: 'Swimlane sequence diagram' };
+          return (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              title={meta.title}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+                viewMode === m
+                  ? 'bg-gray-600 text-white'
+                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+              }`}
+            >
+              {meta.icon}
+              {meta.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Status + actions pushed right */}
