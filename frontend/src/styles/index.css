@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100 font-mono text-sm antialiased;
+  }
+  ::-webkit-scrollbar {
+    @apply w-1.5 h-1.5;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-700 rounded;
+  }
+}
+
+@layer utilities {
+  .panel {
+    @apply bg-gray-900 border border-gray-700 rounded-lg;
+  }
+  .panel-header {
+    @apply px-3 py-2 border-b border-gray-700 text-xs font-bold uppercase tracking-widest text-gray-400;
+  }
+}

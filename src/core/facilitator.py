@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import time
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol, Sequence, runtime_checkable
 
@@ -44,6 +45,9 @@ class FacilitatorResult:
     rejections: dict[str, Rejection]
     dead: set[str]
     faults: list[FaultEvent] = field(default_factory=list)
+    # Per-validator settle wall-clock offsets in microseconds, relative to start
+    # of the settle phase (NOT request entry). Empty when quorum not met.
+    settle_offsets_us: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -239,7 +243,16 @@ class Facilitator:
             return result
 
         signer_ids = set(result.certificates.keys())
+        settle_phase_start_ns = time.perf_counter_ns()
+        offsets: dict[str, tuple[int, int]] = {}
         for vid, client in self._validators:
             if vid in signer_ids:
+                t_start_ns = time.perf_counter_ns()
                 client.settle(claim)
+                t_end_ns = time.perf_counter_ns()
+                offsets[vid] = (
+                    (t_start_ns - settle_phase_start_ns) // 1000,
+                    (t_end_ns - settle_phase_start_ns) // 1000,
+                )
+        result.settle_offsets_us = offsets
         return result

@@ -43,14 +43,15 @@ def build_facilitator_config(
     f: int,
     per_validator_timeout_s: float,
     genesis_accounts: list[dict],
-) -> FacilitatorConfig:
+) -> tuple[FacilitatorConfig, dict[str, "LocalValidatorClient"]]:
     """Instantiate n=3f+1 validators, each seeded with the same genesis accounts.
 
-    Each entry in genesis_accounts must have keys:
-      account_id (str), pubkey_b64 (base64url VerifyKey), balance (int).
+    Returns (FacilitatorConfig, debug_registry) where debug_registry maps
+    validator_id → LocalValidatorClient for fault injection via debug routes.
     """
     n = 3 * f + 1
     validators: list[tuple[str, ValidatorClient]] = []
+    debug_registry: dict[str, LocalValidatorClient] = {}
 
     for i in range(n):
         vid = f"validator-{i}"
@@ -58,10 +59,13 @@ def build_facilitator_config(
         for acct in genesis_accounts:
             owner = VerifyKey(_b64decode(acct["pubkey_b64"]))
             store.create_account(acct["account_id"], owner, int(acct["balance"]))
-        validators.append((vid, LocalValidatorClient(Validator(vid, store))))
+        client = LocalValidatorClient(Validator(vid, store))
+        validators.append((vid, client))
+        debug_registry[vid] = client
 
-    return FacilitatorConfig(
+    cfg = FacilitatorConfig(
         f=f,
         validators=validators,
         per_validator_timeout_seconds=per_validator_timeout_s,
     )
+    return cfg, debug_registry

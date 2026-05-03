@@ -1,0 +1,4 @@
+[
+  { "account_id": "agent-1",          "pubkey_b64": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ", "balance": 10000 },
+  { "account_id": "server-recipient", "pubkey_b64": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ", "balance": 0     }
+]
