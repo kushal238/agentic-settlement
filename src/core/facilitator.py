@@ -5,7 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import time
 from dataclasses import dataclass, field
-from typing import Mapping, Protocol, Sequence, runtime_checkable
+from typing import Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from src.core.claim import Claim
 from src.core.crypto import verify
@@ -202,15 +202,54 @@ class Facilitator:
         self._validators = list(config.validators)
         self._timeout = config.per_validator_timeout_seconds
 
-    def submit_claim(self, claim: Claim) -> FacilitatorResult:
-        """Fan out to all 3f+1 validators; wait until each responds or times out; then evaluate quorum."""
+    def submit_claim(
+        self,
+        claim: Claim,
+        on_event: Callable[[dict], None] | None = None,
+    ) -> FacilitatorResult:
+        """Fan out to all 3f+1 validators; wait until each responds or times out; then evaluate quorum.
+
+        If on_event is provided it is invoked once per validator outcome with:
+          {"kind": "VALIDATOR_RESPONDED", "validator_id": str,
+           "outcome": "cert" | "rejection" | "exception" | "timeout",
+           "rt_us": int, "reason": str | None}
+
+        Success / rejection / exception events fire from the validator's worker
+        thread the instant it returns (true completion time). Timeout events
+        fire from the orchestrator thread when the per-validator wait expires.
+
+        Callers driving on_event from a thread-unsafe consumer (e.g.
+        asyncio.Queue) MUST pass a thread-safe wrapper -- see
+        EventBus.make_threadsafe_publisher.
+        """
+        t0_ns = time.perf_counter_ns()
+
+        def emit(event: dict) -> None:
+            if on_event is not None:
+                on_event(event)
 
         def call_one(vid: str, client: ValidatorClient) -> tuple[str, list[Certificate | Rejection]]:
             try:
                 out = client.verify_and_certify(claim)
-                return vid, [out]
-            except Exception:
+            except Exception as exc:
+                emit({
+                    "kind": "VALIDATOR_RESPONDED",
+                    "validator_id": vid,
+                    "outcome": "exception",
+                    "rt_us": (time.perf_counter_ns() - t0_ns) // 1000,
+                    "reason": repr(exc),
+                })
                 return vid, []
+            outcome = "cert" if isinstance(out, Certificate) else "rejection"
+            reason = getattr(out, "reason", None) if outcome == "rejection" else None
+            emit({
+                "kind": "VALIDATOR_RESPONDED",
+                "validator_id": vid,
+                "outcome": outcome,
+                "rt_us": (time.perf_counter_ns() - t0_ns) // 1000,
+                "reason": reason,
+            })
+            return vid, [out]
 
         responses: dict[str, list[Certificate | Rejection]] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(self._validators)) as pool:
@@ -224,8 +263,22 @@ class Facilitator:
                     responses[v_id] = msgs
                 except concurrent.futures.TimeoutError:
                     responses[vid] = []
-                except Exception:
+                    emit({
+                        "kind": "VALIDATOR_RESPONDED",
+                        "validator_id": vid,
+                        "outcome": "timeout",
+                        "rt_us": (time.perf_counter_ns() - t0_ns) // 1000,
+                        "reason": None,
+                    })
+                except Exception as exc:
                     responses[vid] = []
+                    emit({
+                        "kind": "VALIDATOR_RESPONDED",
+                        "validator_id": vid,
+                        "outcome": "exception",
+                        "rt_us": (time.perf_counter_ns() - t0_ns) // 1000,
+                        "reason": repr(exc),
+                    })
 
         for vid, _ in self._validators:
             responses.setdefault(vid, [])
