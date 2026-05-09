@@ -1,5 +1,6 @@
 """API Server entry point."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -8,8 +9,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api_server import config
+from src.api_server.routes import events as events_route
 from src.api_server.routes import health as health_route
 from src.api_server.routes import resource as resource_route
+from src.core.eventbus import EventBus
 
 
 def create_app(http_client: httpx.AsyncClient | None = None) -> FastAPI:
@@ -19,6 +22,11 @@ def create_app(http_client: httpx.AsyncClient | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.http_client = http_client if http_client is not None else httpx.AsyncClient()
+        # Event bus + loop reference for /events SSE consumers and route
+        # handlers that emit. Captured here on the loop thread so sync code
+        # (if added later) can build threadsafe publishers.
+        app.state.event_bus = EventBus()
+        app.state.event_loop = asyncio.get_running_loop()
         try:
             yield
         finally:
@@ -34,6 +42,7 @@ def create_app(http_client: httpx.AsyncClient | None = None) -> FastAPI:
     )
     _app.include_router(resource_route.router)
     _app.include_router(health_route.router)
+    _app.include_router(events_route.router)
     return _app
 
 
