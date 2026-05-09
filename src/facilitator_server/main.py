@@ -11,6 +11,7 @@ from src.core.eventbus import EventBus
 from src.core.facilitator import Facilitator
 from src.facilitator_server import config
 from src.facilitator_server.node_registry import build_facilitator_config, load_genesis_accounts
+from src.facilitator_server.routes import account as account_route
 from src.facilitator_server.routes import health as health_route
 from src.facilitator_server.routes import settle as settle_route
 from src.facilitator_server.routes import debug as debug_route
@@ -53,6 +54,7 @@ def create_app(facilitator: Facilitator | None = None) -> FastAPI:
     _app.include_router(health_route.router)
     _app.include_router(debug_route.router)
     _app.include_router(events_route.router)
+    _app.include_router(account_route.router)
     return _app
 
 

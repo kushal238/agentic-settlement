@@ -30,6 +30,19 @@ class FaultEventOut(BaseModel):
     detail: str
 
 
+class RegisterAccountRequest(BaseModel):
+    account_id: str
+    pubkey_b64: str          # base64url-encoded Ed25519 VerifyKey (32 bytes)
+    balance: int = 0
+
+
+class AccountStateOut(BaseModel):
+    account_id: str
+    pubkey_b64: str
+    balance: int
+    nonce: int
+
+
 class QuorumResult(BaseModel):
     quorum_met: bool
     success_count: int
