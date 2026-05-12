@@ -60,11 +60,15 @@ class Narrator:
 
     TAG_WIDTH = 13
 
-    def __init__(self, prefix: str, *, use_color: bool, quiet: bool, stream=sys.stderr):
+    def __init__(self, prefix: str, *, use_color: bool, quiet: bool,
+                 step_mode: bool = False, stream=sys.stderr,
+                 input_fn=input):
         self.prefix = prefix
         self.use_color = use_color
         self.quiet = quiet
+        self.step_mode = step_mode
         self.stream = stream
+        self._input_fn = input_fn  # injectable so tests can drive --step without a real stdin
 
     def _styled(self, text: str, code: str) -> str:
         if not self.use_color:
@@ -147,6 +151,19 @@ class Narrator:
     def fail(self, text: str) -> None:
         self.line(self._styled(f"  ✗ {text}", COLOR_CODES["error"]))
 
+    def wait_for_continue(self) -> None:
+        """When step_mode is on, pause for the user to press Enter. No-op
+        otherwise. Suppressed by --quiet (would hang invisibly)."""
+        if not self.step_mode or self.quiet:
+            return
+        prompt = self._styled("  [press Enter to continue]", COLOR_CODES["dim"])
+        print(f"{self._tag():<{self.TAG_WIDTH + 9}} {prompt}", file=self.stream, end="", flush=True)
+        try:
+            self._input_fn("")
+        except EOFError:
+            # Non-interactive stdin: just keep moving.
+            print(file=self.stream)
+
 
 # ---------------------------------------------------------------------------
 # Result dataclasses
@@ -159,6 +176,10 @@ class BuyResult:
     quorum_size: int | None = None
     elapsed_ms: int | None = None
     failure_reason: str | None = None
+    # Per-phase wall-clock milliseconds. Keys are the step names used in the
+    # final breakdown line. Excludes human-pacing time when step_mode is on
+    # (we measure only the work, not the pauses).
+    timings_ms: dict[str, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +232,20 @@ def run_buy(
     facilitator_url_for_display: str,
     narrator: Narrator,
 ) -> BuyResult:
-    t_start = time.perf_counter_ns()
+    # Per-phase timings (wall-clock ms). We measure only the work inside each
+    # step -- the human pause from --step lives between phases and is reported
+    # separately so it can't contaminate the headline "facilitator < 100ms"
+    # number.
+    timings: dict[str, int] = {}
+
+    def _stamp(name: str, t0_ns: int) -> None:
+        timings[name] = (time.perf_counter_ns() - t0_ns) // 1_000_000
+
+    t_buy_start = time.perf_counter_ns()
     narrator.section_break()
 
     # ------------------------------------------------------------- step 1
+    t0 = time.perf_counter_ns()
     narrator.step(1, 7, "Initial request — discover payment requirements")
     narrator.request("GET", f"{api_url_for_display}/resource")
     resp = api_client.get("/resource")
@@ -228,8 +259,11 @@ def run_buy(
     advertised_hash = resp.headers.get("X-Payment-Payload-Hash", "")
     pay_recipient = requirements["recipient"]
     pay_amount = int(requirements["amount"])
+    _stamp("ask", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 2
+    t0 = time.perf_counter_ns()
     narrator.step(2, 7, "Discover my current nonce")
     narrator.request("GET", f"{facilitator_url_for_display}/account/{wallet.account_id}")
     resp = facilitator_client.get(f"/account/{wallet.account_id}")
@@ -243,8 +277,11 @@ def run_buy(
     narrator.kv("balance:",    account["balance"])
     narrator.kv("nonce:",      account["nonce"])
     nonce = account["nonce"]
+    _stamp("nonce", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 3
+    t0 = time.perf_counter_ns()
     narrator.step(3, 7, "Build and sign claim")
     claim = create_claim(
         wallet.account_id, pay_recipient, pay_amount, nonce,
@@ -258,8 +295,11 @@ def run_buy(
     narrator.hex_dump("canonical payload", claim.payload())
     narrator.kv("sender_pubkey:", f"{wallet.pubkey_b64}  (32 bytes)")
     narrator.kv("signature:",     f"{_b64encode(claim.signature)}  (64 bytes)")
+    _stamp("sign", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 4
+    t0 = time.perf_counter_ns()
     narrator.step(4, 7, "Submit claim to facilitator for quorum settlement")
     settle_body = {
         "sender":        claim.sender,
@@ -271,10 +311,10 @@ def run_buy(
     }
     narrator.request("POST", f"{facilitator_url_for_display}/settle",
                      body_summary="{ sender, recipient, amount, nonce, sender_pubkey, signature }")
-    t0 = time.perf_counter_ns()
+    t_http = time.perf_counter_ns()
     resp = facilitator_client.post("/settle", json=settle_body)
-    settle_ms = (time.perf_counter_ns() - t0) // 1_000_000
-    narrator.response(resp.status_code, resp.reason_phrase, ms=settle_ms)
+    settle_http_ms = (time.perf_counter_ns() - t_http) // 1_000_000
+    narrator.response(resp.status_code, resp.reason_phrase, ms=settle_http_ms)
     if resp.status_code != 200:
         narrator.fail(f"/settle returned {resp.status_code}: {resp.text}")
         return BuyResult(success=False, failure_reason=f"/settle failed: {resp.status_code}")
@@ -306,8 +346,11 @@ def run_buy(
     narrator.kv("  claim_digest:",     proof["claim_digest"])
     narrator.kv("  success_count:",    proof["success_count"])
     narrator.kv("  quorum_threshold:", proof["quorum_threshold"])
+    _stamp("settle", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 5
+    t0 = time.perf_counter_ns()
     narrator.step(5, 7, "Encode proof for the X-Payment-Proof header")
     proof_json = json.dumps(proof)
     proof_b64 = _b64encode(proof_json.encode())
@@ -315,23 +358,29 @@ def run_buy(
     narrator.kv("base64 header:",   f"{len(proof_b64)} bytes")
     preview = proof_b64[:128] + ("..." if len(proof_b64) > 128 else "")
     narrator.line(f"  preview: {preview}")
+    _stamp("encode", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 6
+    t0 = time.perf_counter_ns()
     narrator.step(6, 7, "Retry GET /resource with the proof")
     narrator.request("GET", f"{api_url_for_display}/resource")
     narrator.line(f"    X-Payment-Proof: <{len(proof_b64)} bytes, see step 5>")
-    t0 = time.perf_counter_ns()
+    t_http = time.perf_counter_ns()
     resp = api_client.get("/resource", headers={"X-Payment-Proof": proof_b64})
-    retry_ms = (time.perf_counter_ns() - t0) // 1_000_000
-    narrator.response(resp.status_code, resp.reason_phrase, ms=retry_ms)
+    retry_http_ms = (time.perf_counter_ns() - t_http) // 1_000_000
+    narrator.response(resp.status_code, resp.reason_phrase, ms=retry_http_ms)
     if resp.status_code != 200:
         narrator.fail(f"/resource returned {resp.status_code}: {resp.text}")
         return BuyResult(success=False, failure_reason=f"/resource retry failed: {resp.status_code}")
     narrator.headers(dict(resp.headers), only_prefix="X-Payment")
     paid = resp.json()
     narrator.body("body:", paid)
+    _stamp("redeem", t0)
+    narrator.wait_for_continue()
 
     # ------------------------------------------------------------- step 7
+    t0 = time.perf_counter_ns()
     narrator.step(7, 7, "Verify payload integrity against advertised hash")
     payload_to_hash = paid["data"]
     computed_hash = hashlib.sha256(json.dumps(payload_to_hash, sort_keys=True).encode()).hexdigest()
@@ -342,23 +391,39 @@ def run_buy(
     else:
         narrator.fail("payload hash MISMATCH -- server returned different content than advertised")
         return BuyResult(success=False, failure_reason="payload hash mismatch")
+    _stamp("verify", t0)
 
     # -------------------------------------------------------------------
-    elapsed_ms = (time.perf_counter_ns() - t_start) // 1_000_000
+    # Sum of per-step work, which excludes any human-pacing time between
+    # steps in --step mode. This is the publication-relevant number.
+    work_ms = sum(timings.values())
+    # Wall-clock from buy start to buy end. In automated mode it matches
+    # work_ms ± formatting. In --step mode it includes human pauses.
+    wallclock_ms = (time.perf_counter_ns() - t_buy_start) // 1_000_000
+
     quorum_size = settle_result["success_count"]
     narrator.line()
     narrator.section_break()
     narrator.line(narrator._styled(
         f"BUY COMPLETE   paid {pay_amount} to {pay_recipient}   "
-        f"quorum {quorum_size}/{quorum_threshold}   end-to-end: {elapsed_ms}ms",
+        f"quorum {quorum_size}/{quorum_threshold}",
         COLOR_CODES["ok"],
     ))
+    narrator.kv("end-to-end (work):", f"{work_ms}ms")
+    if narrator.step_mode:
+        narrator.kv("wall-clock:", f"{wallclock_ms}ms  (includes human pacing -- not representative)")
+    else:
+        narrator.kv("wall-clock:", f"{wallclock_ms}ms")
+    narrator.line("  per-phase breakdown:")
+    for name, ms in timings.items():
+        narrator.line(f"    {name:<8} {ms}ms")
 
     return BuyResult(
         success=True,
         payload=paid,
         quorum_size=quorum_size,
-        elapsed_ms=elapsed_ms,
+        elapsed_ms=work_ms,
+        timings_ms=timings,
     )
 
 
@@ -384,6 +449,10 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="Initial balance to seed the account with (only on first registration)")
     common.add_argument("--quiet", action="store_true", help="Suppress narration; print only result line")
     common.add_argument("--no-color", action="store_true", help="Disable ANSI color codes")
+    common.add_argument("--step", action="store_true",
+                        help="Pause for Enter between buy steps. For live classroom demos. "
+                             "Wall-clock timing under --step is not representative of "
+                             "real automated agent latency -- use the per-phase breakdown instead.")
 
     sub.add_parser("setup", parents=[common],
                    help="Generate keypair if needed and register with facilitator. Then exit.")
@@ -397,9 +466,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     use_color = (not args.no_color) and sys.stderr.isatty()
 
+    step_mode = bool(getattr(args, "step", False))
     wallet_n = Narrator("wallet",    use_color=use_color, quiet=args.quiet)
     boot_n   = Narrator("bootstrap", use_color=use_color, quiet=args.quiet)
-    buy_n    = Narrator("buy",       use_color=use_color, quiet=args.quiet)
+    buy_n    = Narrator("buy",       use_color=use_color, quiet=args.quiet, step_mode=step_mode)
 
     # ---- wallet
     path = wallet_path()

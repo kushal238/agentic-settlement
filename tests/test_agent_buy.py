@@ -116,6 +116,56 @@ def test_run_buy_increments_nonce_for_next_run(tmp_path: Path, apps):
     assert second.success, f"second buy failed: {second.failure_reason}"
 
 
+def test_run_buy_returns_per_phase_timings(tmp_path: Path, apps):
+    """BuyResult.timings_ms is the per-phase breakdown we publish in the
+    BUY COMPLETE block. All seven phases must appear, all non-negative."""
+    fac_tc, api_tc = apps
+    wallet, _ = load_or_generate(tmp_path / "wallet.json", account_id="timings-buyer")
+    do_bootstrap(fac_tc, wallet, initial_balance=1000, narrator=_silent("bootstrap"))
+
+    result = run_buy(
+        api_client=api_tc, facilitator_client=fac_tc, wallet=wallet,
+        api_url_for_display="http://test-api",
+        facilitator_url_for_display="http://test-fac",
+        narrator=_silent("buy"),
+    )
+    assert result.success
+    assert result.timings_ms is not None
+    expected_phases = {"ask", "nonce", "sign", "settle", "encode", "redeem", "verify"}
+    assert set(result.timings_ms.keys()) == expected_phases
+    assert all(ms >= 0 for ms in result.timings_ms.values())
+    # The work total should match the elapsed_ms field within rounding.
+    assert sum(result.timings_ms.values()) == result.elapsed_ms
+
+
+def test_run_buy_step_mode_pauses_between_steps(tmp_path: Path, apps):
+    """With step_mode=True, the narrator's input_fn is called once after
+    each of the first six steps (step 7 has no following pause since the
+    buy completes right after). Stubbed input avoids reading from stdin."""
+    fac_tc, api_tc = apps
+    wallet, _ = load_or_generate(tmp_path / "wallet.json", account_id="step-buyer")
+    do_bootstrap(fac_tc, wallet, initial_balance=1000, narrator=_silent("bootstrap"))
+
+    from cli.agent_client import Narrator
+    call_count = {"n": 0}
+
+    def stub_input(prompt):
+        call_count["n"] += 1
+        return ""
+
+    stepping = Narrator("buy", use_color=False, quiet=False,
+                        step_mode=True, input_fn=stub_input,
+                        stream=open("/dev/null", "w"))
+    result = run_buy(
+        api_client=api_tc, facilitator_client=fac_tc, wallet=wallet,
+        api_url_for_display="http://test-api",
+        facilitator_url_for_display="http://test-fac",
+        narrator=stepping,
+    )
+    assert result.success
+    assert call_count["n"] == 6  # one pause after each of steps 1..6
+
+
 def test_run_buy_fails_cleanly_if_account_unknown(tmp_path: Path, apps):
     """If the agent skips bootstrap, the validators have no account for it.
     submit_claim will fail quorum (all validators reject), and run_buy must
