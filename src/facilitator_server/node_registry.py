@@ -30,6 +30,13 @@ class LocalValidatorClient:
     def settle(self, claim: Claim) -> None:
         self._validator.settle(claim)
 
+    def confirm(self, proof: dict) -> str:
+        return self._validator.confirm(proof)
+
+    @property
+    def validator(self) -> Validator:
+        return self._validator
+
 
 def load_genesis_accounts(path: str | None) -> list[dict]:
     """Load account seed data from a JSON file; returns empty list if path is None or missing."""
@@ -59,9 +66,15 @@ def build_facilitator_config(
         for acct in genesis_accounts:
             owner = VerifyKey(_b64decode(acct["pubkey_b64"]))
             store.create_account(acct["account_id"], owner, int(acct["balance"]))
-        client = LocalValidatorClient(Validator(vid, store))
+        client = LocalValidatorClient(Validator(vid, store, f=f))
         validators.append((vid, client))
         debug_registry[vid] = client
+
+    # Wire peer pubkeys post-construction (circular at __init__ time). Every
+    # validator needs the full set so confirm() can verify quorum certs.
+    peers = {vid: client.validator.verify_key for vid, client in debug_registry.items()}
+    for client in debug_registry.values():
+        client.validator.set_peers(peers)
 
     cfg = FacilitatorConfig(
         f=f,
