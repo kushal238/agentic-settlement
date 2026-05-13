@@ -33,6 +33,12 @@ def _b64decode(s: str) -> bytes:
 
 
 class Validator:
+    # Cap how many nonces ahead a single sender can buffer in _presettled.
+    # Prevents a malformed or adversarial proof with a far-future nonce from
+    # eating unbounded memory. Realistic gaps in operation are 0-2 (a few
+    # missed rounds); 1024 is generous and well under any DoS concern.
+    MAX_PRESETTLED_LOOKAHEAD = 1024
+
     def __init__(self, validator_id: str, state: AccountStateStore, f: int = 1):
         self.validator_id = validator_id
         self.state = state
@@ -166,38 +172,52 @@ class Validator:
 
         if claim.nonce < sender_account.nonce:
             return "stale"
+        if claim.nonce > sender_account.nonce + self.MAX_PRESETTLED_LOOKAHEAD:
+            # Defense in depth: a quorum-signed cert this far ahead would
+            # require collusion beyond the BFT threshold, but a buggy client
+            # or proof-serialization bug could still produce one. Refuse to
+            # buffer rather than risk memory growth.
+            raise ValueError(
+                f"nonce too far ahead: {claim.nonce} > local "
+                f"{sender_account.nonce} + {self.MAX_PRESETTLED_LOOKAHEAD}"
+            )
 
         self._presettled[(claim.sender, claim.nonce)] = claim
-        applied_any = self._drain(claim.sender)
+        self._drain(claim.sender)
 
-        # We applied something but the cert we just received might still be
-        # buffered if it was for a future nonce and the drain stopped earlier.
-        still_buffered = (claim.sender, claim.nonce) in self._presettled
-        if still_buffered:
+        # If our cert is still buffered after drain, an earlier nonce is missing.
+        # Otherwise drain applied at least our own cert (we just inserted it at
+        # a key >= local nonce, so the drain loop must have popped it).
+        if (claim.sender, claim.nonce) in self._presettled:
             return "buffered"
-        return "settled" if applied_any else "stale"
+        return "settled"
 
-    def _drain(self, sender: str) -> bool:
-        """Pop presettled claims for sender in nonce order; apply each. Returns True if any applied."""
-        applied = False
+    def _drain(self, sender: str) -> None:
+        """Pop presettled claims for sender in nonce order, applying each."""
         while True:
             account = self.state.get_account(sender)
-            key = (sender, account.nonce)
-            claim = self._presettled.pop(key, None)
+            claim = self._presettled.pop((sender, account.nonce), None)
             if claim is None:
-                return applied
+                return
             self._apply(claim)
-            applied = True
 
     def _verify_quorum_signatures(self, claim: Claim, proof: dict[str, Any]) -> None:
-        """Check that >=2f+1 distinct known peers signed claim.payload()."""
+        """Check that >=2f+1 distinct known peers signed claim.payload().
+
+        Stops verifying once the threshold is reached -- extra certificates
+        beyond quorum are irrelevant to validity and avoiding the work saves
+        Ed25519 verifications on the hot path.
+        """
         certs = proof.get("certificates")
         if not isinstance(certs, dict):
             raise ValueError("malformed proof: certificates must be a map")
 
         payload = claim.payload()
+        threshold = 2 * self._f + 1
         valid_signers: set[str] = set()
         for vid, cert in certs.items():
+            if len(valid_signers) >= threshold:
+                break
             if not isinstance(cert, dict):
                 raise ValueError(f"malformed certificate entry for {vid}")
             peer_vk = self._peers.get(vid) if self._peers else None  # type: ignore[union-attr]
@@ -214,7 +234,6 @@ class Validator:
                 raise ValueError(f"invalid signature in cert for {vid}")
             valid_signers.add(vid)
 
-        threshold = 2 * self._f + 1
         if len(valid_signers) < threshold:
             raise ValueError(
                 f"insufficient signatures: {len(valid_signers)} < {threshold}"
