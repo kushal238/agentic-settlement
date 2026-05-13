@@ -177,6 +177,52 @@ def test_confirm_rejects_proof_with_unknown_signer():
         validators[0].confirm(tampered)
 
 
+def test_confirm_rejects_nonce_too_far_ahead():
+    """A proof whose nonce is more than MAX_PRESETTLED_LOOKAHEAD past the local
+    view must be rejected -- this caps memory growth from malformed or
+    maliciously-crafted far-future certs.
+    """
+    alice_priv, alice_pub, _bob_pub, validators = _fresh_cluster()
+    fac = _facilitator(validators)
+    # Build a claim whose nonce is way ahead of any validator's local view (0).
+    far = Validator.MAX_PRESETTLED_LOOKAHEAD + 10
+    claim = create_claim(
+        "alice", "bob", 1, nonce=far, sender_pubkey=alice_pub, sender_privkey=alice_priv
+    )
+    # We need a real quorum cert over this claim; fan out via submit_claim --
+    # validators will reject on nonce mismatch, so we build the proof manually
+    # by collecting forged-but-signed certs from each validator's signing key
+    # over the claim payload directly.
+    from src.core.crypto import sign as _sign
+    import base64
+
+    payload = claim.payload()
+    certs = {}
+    for v in validators:
+        sig = _sign(payload, v._signing_key)
+        certs[v.validator_id] = {
+            "validator_id": v.validator_id,
+            "validator_signature": base64.urlsafe_b64encode(sig).decode(),
+            "validator_pubkey": base64.urlsafe_b64encode(v.verify_key.encode()).decode(),
+        }
+    proof = {
+        "claim": {
+            "sender": claim.sender,
+            "recipient": claim.recipient,
+            "amount": claim.amount,
+            "nonce": claim.nonce,
+            "sender_pubkey": base64.urlsafe_b64encode(claim.sender_pubkey.encode()).decode(),
+            "signature": base64.urlsafe_b64encode(claim.signature).decode(),
+        },
+        "certificates": certs,
+    }
+
+    with pytest.raises(ValueError, match="nonce too far ahead"):
+        validators[0].confirm(proof)
+    # Buffer must remain empty -- nothing was stored.
+    assert validators[0]._presettled == {}
+
+
 def test_confirm_without_peers_raises():
     """A validator with no peer set wired cannot verify quorum certs."""
     alice_priv, alice_pub, _bob_pub, validators = _fresh_cluster()

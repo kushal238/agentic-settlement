@@ -308,19 +308,24 @@ class Facilitator:
         proof = build_payment_proof(result, self._f)
         settle_phase_start_ns = time.perf_counter_ns()
         offsets: dict[str, tuple[int, int]] = {}
-        for vid, client in self._validators:
-            t_start_ns = time.perf_counter_ns()
+
+        def confirm_one(vid: str, client: ValidatorClient) -> tuple[str, int, int]:
+            t_start = time.perf_counter_ns()
             try:
                 client.confirm(proof)
             except Exception:
-                # Confirm failures on individual validators are isolated --
-                # the certificate is still valid; the rest of the cluster
-                # converges. A future fault event channel could surface this.
+                # Isolated -- the cert is durable on the rest of the cluster.
                 pass
-            t_end_ns = time.perf_counter_ns()
-            offsets[vid] = (
-                (t_start_ns - settle_phase_start_ns) // 1000,
-                (t_end_ns - settle_phase_start_ns) // 1000,
-            )
+            t_end = time.perf_counter_ns()
+            return vid, t_start, t_end
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self._validators)) as pool:
+            futures = [pool.submit(confirm_one, vid, client) for vid, client in self._validators]
+            for fut in concurrent.futures.as_completed(futures):
+                vid, t_start, t_end = fut.result()
+                offsets[vid] = (
+                    (t_start - settle_phase_start_ns) // 1000,
+                    (t_end - settle_phase_start_ns) // 1000,
+                )
         result.settle_offsets_us = offsets
         return result
