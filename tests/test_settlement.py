@@ -19,8 +19,16 @@ def _four_validators(alice_balance: int = 100):
         st = AccountStateStore()
         st.create_account("alice", alice_pub, balance=alice_balance)
         st.create_account("bob", bob_pub, balance=50)
-        validators.append(Validator(f"V{i+1}", st))
+        validators.append(Validator(f"V{i+1}", st, f=1))
+    _wire_peers(validators)
     return alice_priv, alice_pub, validators
+
+
+def _wire_peers(validators):
+    """Inject each validator's verify_key into every peer so confirm() can verify certs."""
+    peers = {v.validator_id: v.verify_key for v in validators}
+    for v in validators:
+        v.set_peers(peers)
 
 
 def _facilitator(validators, timeout=5.0):
@@ -48,14 +56,13 @@ def test_submit_and_settle_updates_all_signers():
         assert v.state.get_nonce("alice") == 1
 
 
-def test_rejecting_validator_state_diverges():
-    """Validators that rejected the claim must NOT be settled -- state divergence is intentional."""
+def test_byzantine_rejecter_catches_up_via_confirm():
+    """Step-5 broadcast pulls a rejecting validator back in: V4 misbehaves during validation,
+    but the certificate from the other three reaches it and it applies the claim locally.
+    """
     alice_priv, alice_pub, validators = _four_validators()
-    # V4 sees a stale, low balance; it will reject the 30-token claim.
-    bad_state = AccountStateStore()
-    bad_state.create_account("alice", alice_pub, balance=5)
-    bad_state.create_account("bob", generate_keypair()[1], balance=50)
-    validators[3] = Validator("V4", bad_state)
+    # V4 fault-injects a rejection at validation time.
+    validators[3].faulty = True
 
     fac = _facilitator(validators)
     claim = create_claim(
@@ -65,13 +72,11 @@ def test_rejecting_validator_state_diverges():
 
     assert result.quorum_met
     assert "V4" in result.rejections
-    # V1..V3 advanced
-    for v in validators[:3]:
+    # All four validators -- including the rejecter -- converge via the cert.
+    for v in validators:
         assert v.state.get_balance("alice") == 70
+        assert v.state.get_balance("bob") == 80
         assert v.state.get_nonce("alice") == 1
-    # V4 stayed at its stale view
-    assert validators[3].state.get_balance("alice") == 5
-    assert validators[3].state.get_nonce("alice") == 0
 
 
 def test_no_quorum_means_no_settlement():
@@ -81,7 +86,8 @@ def test_no_quorum_means_no_settlement():
         bad_state = AccountStateStore()
         bad_state.create_account("alice", alice_pub, balance=5)
         bad_state.create_account("bob", generate_keypair()[1], balance=50)
-        validators[i] = Validator(f"V{i+1}", bad_state)
+        validators[i] = Validator(f"V{i+1}", bad_state, f=1)
+    _wire_peers(validators)
 
     fac = _facilitator(validators)
     claim = create_claim(
@@ -143,10 +149,11 @@ def test_replay_after_settlement_is_rejected():
 
 
 def test_dead_signer_is_not_settled():
-    """A validator that times out during quorum assembly does not get settled."""
+    """A validator that times out (and stays unreachable for confirm) does not catch up."""
     alice_priv, alice_pub, validators = _four_validators()
 
     class SlowClient:
+        """Permanently unreachable client: every call raises after a brief sleep."""
         def __init__(self, inner: Validator):
             self._inner = inner
 
@@ -156,6 +163,11 @@ def test_dead_signer_is_not_settled():
 
         def settle(self, claim: Claim) -> None:
             self._inner.settle(claim)
+
+        def confirm(self, proof: dict) -> str:
+            # Simulate the validator being unreachable -- the facilitator's
+            # confirm call fails and is swallowed; underlying state is untouched.
+            raise ConnectionError("simulated dead validator")
 
     slow_inner = validators[3]
     slow = SlowClient(slow_inner)
